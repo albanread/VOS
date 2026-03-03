@@ -1,0 +1,7 @@
+[submodule "ThirdParty/llama.cpp"]
+	path = ThirdParty/llama.cpp
+	url = https://github.com/ggerganov/llama.cpp
+
+[submodule "ThirdParty/sherpa-onnx"]
+	path = ThirdParty/sherpa-onnx
+	url = https://github.com/k2-fsa/sherpa-onnx

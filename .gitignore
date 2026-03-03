@@ -1,0 +1,33 @@
+# macOS
+.DS_Store
+
+# SwiftPM / Xcode
+.build/
+.swiftpm/
+DerivedData/
+xcuserdata/
+*.xcuserstate
+
+# Package manager caches
+.packages/
+
+# Local build products
+build_package/
+VoiceOverStudio.app/
+*.xcarchive
+output.mp3
+
+# Third-party build outputs (keep sources via submodules)
+ThirdParty/**/.build/
+ThirdParty/**/build/
+ThirdParty/**/build-*/
+ThirdParty/**/cmake-build*/
+ThirdParty/**/CMakeFiles/
+ThirdParty/**/CMakeCache.txt
+ThirdParty/**/Makefile
+ThirdParty/**/compile_commands.json
+ThirdParty/**/bin/
+ThirdParty/**/lib/
+ThirdParty/**/install/
+ThirdParty/**/dist/
+ThirdParty/**/node_modules/

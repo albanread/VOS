@@ -1,0 +1,4 @@
+module LLamaC {
+    umbrella header "llama_umbrella.h"
+    export *
+}
