@@ -4,22 +4,22 @@
 Mac app (Apple Silicon, macOS 14+) for creating voice-overs locally. Users create paragraphs with text, pick a voice, set an output filename, generate and preview audio, and export a full sequence with configurable gaps. No Python dependency in the final app.
 
 ## Goals
-- Local-only inference: TTS via Sherpa-ONNX VITS; LLM via llama.cpp (GGUF) for text polishing.
-- Paragraph-centric workflow: track text, selected voice (multi-speaker), output file name, generation state, and produced audio path.
-- Playback and sequencing: play individual paragraphs; export a stitched timeline with per-paragraph gaps.
-- Simple configuration: user-provided paths to TTS (model + tokens) and LLM GGUF; Apple Silicon optimized.
-- Mac-native UX: SwiftUI app, sandbox-friendly file access via NSOpenPanel/NSSavePanel as needed.
+- Local-only inference: TTS via Qwen3-TTS on MLX; LLM via llama.cpp (GGUF) for text polishing.
+- Paragraph-centric workflow: track text, selected voice preset, output file name, generation state, and produced audio path.
+- Playback and sequencing: play individual paragraphs and export a stitched timeline with per-paragraph gaps.
+- Simple configuration: user-provided GGUF path plus a configurable Qwen model repo selected for the machine tier.
+- Mac-native UX: SwiftUI app with no Python bridge, no helper daemon, and no cloud dependency.
 
 ## Current Status (March 2026)
 - Implemented with real native engines:
   - `llama.cpp` built via CMake and linked through local `LLamaC` module.
-  - `sherpa-onnx` built via `build-swift-macos.sh` and linked through local `SherpaOnnxC` module.
+  - `mlx-audio-swift` and `mlx-swift` linked through SwiftPM for Qwen3-TTS generation.
 - Implemented core features:
-  - Per-paragraph text, voice, output filename, gap, and speed.
+  - Per-paragraph text, Qwen voice preset, output filename, gap, and speed.
   - Per-paragraph generate/playback and “Generate All”.
   - Transcript save/load (JSON) with backward-compatible paragraph decoding.
   - Export full sequence to M4A or WAV with per-paragraph gaps.
-  - Model path pickers for LLM GGUF, VITS ONNX, tokens, and espeak-ng data directory.
+  - Managed GGUF download plus configurable Qwen model repo selection.
   - Paragraph duplicate and list reordering hooks.
 - Remaining blockers are primarily packaging/polish, not core functionality.
 
@@ -29,40 +29,40 @@ Mac app (Apple Silicon, macOS 14+) for creating voice-overs locally. Users creat
 - Python scripts or CLI tooling in the shipped app.
 
 ## Constraints and Assumptions
-- Running on Apple Silicon; prefer mac-friendly model formats: GGUF for llama.cpp, ONNX for Sherpa-ONNX; use `provider: "coreml"` when stable, fall back to CPU for compatibility.
-- Models are user-supplied and stored outside the app bundle; paths persisted via AppStorage/UserDefaults.
+- Running on Apple Silicon; GGUF remains the local LLM format while TTS runs through MLX-compatible Qwen repositories.
+- Models are stored outside the app bundle; settings are persisted via AppStorage/UserDefaults.
 - Audio export uses AVFoundation; resulting file written to user-selected location (default Downloads).
-- Sherpa-ONNX and llama.cpp are integrated as local native builds (CMake/static libs + C module targets), not remote SwiftPM packages.
-- App should guide users to obtain models: provide in-app links/buttons in Settings to download recommended GGUF (LLM) and ONNX/token files (TTS), show sizes, and set paths after download/selection.
+- llama.cpp remains a local native build; Qwen TTS comes from SwiftPM packages plus remote Hugging Face model repos resolved at runtime.
+- App should guide users to obtain models: provide recommended GGUF downloads and recommended Qwen model repos for each machine tier.
 
 ## Architecture Overview
 - UI: SwiftUI (single-window macOS app) with split view: settings sidebar + paragraph list.
 - ViewModel: `ProjectViewModel` manages paragraphs, engine initialization, generation, playback, sequencing/export, and status.
 - Services:
-  - `TTSService` wraps Sherpa-ONNX OfflineTts; handles model init and wav generation per paragraph.
+  - `TTSService` wraps MLX Qwen3-TTS model loading and wav generation per paragraph.
   - `LLMService` wraps llama.cpp; used for optional text improvement.
 - Audio pipeline: per-paragraph wav output (48 kHz, mono) to temp folder; export merges tracks with gaps via `AVMutableComposition` -> `.m4a` (AAC 48 kHz) with optional WAV export for lossless ingest.
 - Persistence: paragraphs held in-memory for now; optional future Project file (JSON) for saving/restoring sessions.
- - Persistence: paragraphs held in-memory for now; add save/load of "transcripts" (project JSON) to restore paragraphs, voice selections, gaps, and audio filenames; support re-generation when audio is missing.
+- Persistence: paragraphs are also saved/loaded as transcript JSON so voice presets, gaps, and filenames survive between runs.
 
 ## Data Model
 - `Paragraph` (Identifiable, Codable)
   - `id: UUID`
   - `text: String`
-  - `voiceId: String` (speaker/model selector; mapped to `sid` for multi-speaker VITS)
+  - `voiceId: String` (Qwen voice preset identifier)
   - `gapDuration: Double` (seconds of silence after paragraph)
   - `audioPath: String?` (generated wav path)
   - `isGenerating: Bool` (UI state)
 - Potential `Project` (future): name, outputDir, paragraphs, createdAt/updatedAt.
 
 ## User Flows
-1) Configure models: user sets paths for LLM GGUF and TTS (model + tokens); click “Initialize Engines”.
-2) Add/edit paragraphs: enter text, set voice (dropdown mapping to speaker ID), adjust gap, set output filename (auto default `para_<uuid>.wav`).
+1) Configure models: user sets an LLM GGUF path and a Qwen model repo, then initializes the engines.
+2) Add/edit paragraphs: enter text, choose a prompt-based voice preset, adjust gap, and set an output filename.
 3) Optional: Improve text via LLM (local inference) per paragraph.
 4) Generate audio: per paragraph, uses TTS; shows progress; stores `audioPath`; status updates.
 5) Preview: play paragraph audio inline.
 6) Export sequence: merge generated clips in order with gaps; write `.m4a` to chosen location; show completion status.
-7) Model fetch/update: from Settings, user clicks “Get LLM model” or “Get TTS model/tokens”; app downloads to a chosen folder (or opens source URL), writes paths back into settings, and validates file presence before init.
+7) Model fetch/update: from Settings, user downloads the recommended GGUF and selects or edits the recommended Qwen model repo.
 
 ## UI Layout (SwiftUI)
 - Sidebar: app title, fields for model paths, Initialize button, Export button, status indicator.
@@ -70,15 +70,15 @@ Mac app (Apple Silicon, macOS 14+) for creating voice-overs locally. Users creat
 - Toolbar: add/delete paragraph controls.
 
 ## Integration Details
-- TTS: Sherpa-ONNX VITS config (ONNX models), allow `numThreads` tweak; consider optional `provider: "coreml"` flag when available; map `voiceId` -> speaker `sid` for multi-speaker models.
+- TTS: MLX Audio Swift loads a Qwen3-TTS repository and generates speech from prompt-based voice descriptors.
 - LLM: llama.cpp bindings; load GGUF (Apple Silicon optimized); context size ~2048; non-streaming improveText helper; ensure cleanup on deinit.
-- Model acquisition UX: Settings panel provides download buttons/links for recommended GGUF and ONNX+tokens, shows file sizes, writes chosen paths, and re-validates existence before initialization.
+- Model acquisition UX: Settings panel provides recommended GGUF downloads and machine-tier-based Qwen repo defaults.
 - File IO: save paragraph wav to `FileManager.default.temporaryDirectory` or user-selected output dir; on export prompt for destination if missing permissions.
 - Audio join: `AVMutableComposition` + `insertEmptyTimeRange` for gaps; export via `AVAssetExportSession` to `.m4a` (AAC 48 kHz mono). Offer WAV 48 kHz export as an option for NLEs that prefer lossless ingest.
 
 ## Persistence Plan
-- Short term: AppStorage for model paths; paragraphs live in-memory.
-- Near term: add transcript save/load (Project JSON via FileDocument) storing paragraph order, text, voiceId, gap, chosen output filename, and existing audio paths; on load, if audio is missing, allow re-generate.
+- Short term: AppStorage for model settings; paragraphs live in-memory while the app is open.
+- Near term: keep transcript save/load (Project JSON via FileDocument) storing paragraph order, text, voiceId, gap, chosen output filename, and existing audio paths; on load, if audio is missing, allow re-generate.
 - Consider versioned file format for forward compatibility.
 
 ## Performance and UX
@@ -99,11 +99,11 @@ Mac app (Apple Silicon, macOS 14+) for creating voice-overs locally. Users creat
 1. **Create distributable macOS app bundle**
   - Move from `swift run` executable flow to an `.app` packaging flow suitable for end users.
 2. **Model validation UX**
-  - Validate selected files/directories before init and show clear per-field errors.
+  - Validate GGUF presence and Qwen repo configuration before init and show clear per-field errors.
 3. **Progress UX improvements**
   - Add per-paragraph progress callbacks for TTS generation and clearer batch progress display.
-4. **CoreML provider toggle for TTS**
-  - Add user-selectable `provider` (`cpu`/`coreml`) with fallback behavior and warnings.
+4. **Model repo and cache UX**
+  - Add explicit control over Hugging Face cache location and richer feedback when large Qwen repos are first downloaded.
 5. **Project file format v1**
   - Add explicit project metadata/versioning around transcript JSON for long-term compatibility.
 6. **Test pass and smoke scripts**

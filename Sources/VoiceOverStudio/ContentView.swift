@@ -130,6 +130,9 @@ struct ContentView: View {
                     Text(viewModel.managedModelsRootDisplay)
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                    Text("Qwen cache: \(viewModel.ttsCacheDisplay)")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
 
                     Divider().padding(.vertical, 4)
 
@@ -152,7 +155,7 @@ struct ContentView: View {
                     Text("LLM (script advice): \(viewModel.currentRecommendation.llmName)")
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                    Text("TTS (voice synthesis): \(viewModel.currentRecommendation.ttsPackageName)")
+                    Text("TTS (voice synthesis): \(viewModel.currentRecommendation.ttsName)")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                     Text(viewModel.currentRecommendation.rationale)
@@ -201,9 +204,22 @@ struct ContentView: View {
                                 .textFieldStyle(.roundedBorder)
                                 .font(.caption)
 
-                            TextField("TTS Package URL", text: $viewModel.modelUpdateURLTTSPackage)
+                            TextField("Qwen TTS Model Repo", text: $viewModel.ttsModelRepo)
                                 .textFieldStyle(.roundedBorder)
                                 .font(.caption)
+
+                            HStack {
+                                Button("Download Qwen Model") {
+                                    Task { await viewModel.downloadTTSModel() }
+                                }
+                                .controlSize(.small)
+                                .disabled(viewModel.isUpdatingModels)
+
+                                Button("Open Qwen Repo") {
+                                    viewModel.openTTSDownloadPage()
+                                }
+                                .controlSize(.small)
+                            }
                                 
                             Button("Re-Initialize Engines") {
                                 viewModel.initializeEngines()
@@ -324,65 +340,12 @@ struct ParagraphRow: View {
                     Text("Voice")
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                    Picker("Voice", selection: $paragraph.voiceSid) {
+                    Picker("Voice", selection: $paragraph.voiceID) {
                         ForEach(voiceOptions) { option in
-                            VoiceLabelView(viewModel: viewModel, option: option)
+                            Text(option.name).tag(option.id)
                         }
                     }
                     .labelsHidden()
-
-                    HStack(spacing: 4) {
-                        Picker("G", selection: Binding(
-                            get: { viewModel.getVoiceTag(sid: paragraph.voiceSid)?.gender ?? "" },
-                            set: { viewModel.setVoiceGender(sid: paragraph.voiceSid, gender: $0) }
-                        )) {
-                            ForEach(viewModel.genderOptions, id: \.self) { g in
-                                Text(g.isEmpty ? "Gen" : g).tag(g)
-                            }
-                        }
-                        .frame(width: 60)
-                        .controlSize(.small)
-
-                        Picker("A", selection: Binding(
-                            get: { viewModel.getVoiceTag(sid: paragraph.voiceSid)?.accent ?? "" },
-                            set: { viewModel.setVoiceAccent(sid: paragraph.voiceSid, accent: $0) }
-                        )) {
-                            ForEach(viewModel.accentOptions, id: \.self) { a in
-                                Text(a.isEmpty ? "Accent" : a).tag(a)
-                            }
-                        }
-                        .frame(width: 90)
-                        .controlSize(.small)
-
-                        Picker("R", selection: Binding(
-                            get: { viewModel.getVoiceTag(sid: paragraph.voiceSid)?.region ?? "" },
-                            set: { viewModel.setVoiceRegion(sid: paragraph.voiceSid, region: $0) }
-                        )) {
-                            ForEach(viewModel.regionOptions, id: \.self) { r in
-                                Text(r.isEmpty ? "Region" : r).tag(r)
-                            }
-                        }
-                        .frame(width: 90)
-                        .controlSize(.small)
-                    }
-
-                    HStack(spacing: 8) {
-                        Text("Quality")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        Slider(
-                            value: Binding(
-                                get: { Double(viewModel.getVoiceTag(sid: paragraph.voiceSid)?.quality ?? 5) },
-                                set: { viewModel.setVoiceQuality(sid: paragraph.voiceSid, quality: Int($0.rounded())) }
-                            ),
-                            in: 0...10,
-                            step: 1
-                        )
-                        .frame(width: 160)
-                        Text("\(Int(viewModel.getVoiceTag(sid: paragraph.voiceSid)?.quality ?? 5))")
-                            .font(.caption)
-                            .frame(width: 24, alignment: .trailing)
-                    }
 
                     Divider().padding(.vertical, 5)
 
@@ -469,25 +432,5 @@ struct ParagraphRow: View {
         .background(Color(NSColor.windowBackgroundColor))
         .cornerRadius(8)
         .shadow(color: Color.black.opacity(0.05), radius: 2, x: 0, y: 1)
-    }
-}
-
-struct VoiceLabelView: View {
-    @ObservedObject var viewModel: ProjectViewModel
-    let option: VoiceOption
-    
-    var body: some View {
-        let tag = viewModel.getVoiceTag(sid: option.sid)
-        let gender = tag?.gender ?? ""
-        let accent = tag?.accent ?? ""
-        let prefix = (gender.isEmpty ? "" : gender + " ") + (accent.isEmpty ? "" : accent + " ")
-        
-        if option.sid < 0 {
-            Text(option.name).tag(option.sid)
-        } else {
-            // For standard numbered voices, optionally prefix with user's tags
-            let displayName = option.name == "Voice \(option.sid)" ? "Voice \(option.sid)" : option.name
-            Text("\(prefix)\(displayName)").tag(option.sid)
-        }
     }
 }

@@ -1,10 +1,17 @@
 // swift-tools-version: 5.9
 // The swift-tools-version declares the minimum version of Swift required to build this package.
 
+import Foundation
 import PackageDescription
 
-let sherpaLibPath = "ThirdParty/sherpa-onnx/build-swift-macos/install/lib"
-let llamaLibPath  = "ThirdParty/llama.cpp/build/bin"
+let packageRoot = URL(fileURLWithPath: #filePath).deletingLastPathComponent().path
+let llamaBuildPath = packageRoot + "/ThirdParty/llama.cpp/build"
+let llamaLibrarySearchPaths = [
+    llamaBuildPath + "/src",
+    llamaBuildPath + "/ggml/src",
+    llamaBuildPath + "/ggml/src/ggml-blas",
+    llamaBuildPath + "/ggml/src/ggml-metal",
+]
 
 let package = Package(
     name: "VoiceOverStudio",
@@ -16,13 +23,20 @@ let package = Package(
             name: "VoiceOverStudio",
             targets: ["VoiceOverStudio"]),
     ],
-    dependencies: [],
+    dependencies: [
+        .package(url: "https://github.com/Blaizzy/mlx-audio-swift.git", branch: "main"),
+        .package(url: "https://github.com/ml-explore/mlx-swift.git", .upToNextMajor(from: "0.30.6")),
+        .package(url: "https://github.com/huggingface/swift-huggingface.git", .upToNextMajor(from: "0.8.1")),
+    ],
     targets: [
         .executableTarget(
             name: "VoiceOverStudio",
             dependencies: [
                 .target(name: "LLamaC"),
-                .target(name: "SherpaOnnxC"),
+                .product(name: "MLXAudioCore", package: "mlx-audio-swift"),
+                .product(name: "MLXAudioTTS", package: "mlx-audio-swift"),
+                .product(name: "MLX", package: "mlx-swift"),
+                .product(name: "HuggingFace", package: "swift-huggingface"),
             ],
             path: "Sources/VoiceOverStudio"
         ),
@@ -32,29 +46,25 @@ let package = Package(
             publicHeadersPath: "include",
             linkerSettings: [
                 .linkedLibrary("c++"),
-                .linkedLibrary("pthread"),
                 .linkedLibrary("m"),
-                .unsafeFlags([
-                    "-L/Volumes/xb/voiceover/VoiceOverStudio/\(llamaLibPath)",
-                    "-lllama",
-                    "-Xlinker", "-rpath", "-Xlinker",
-                    "/Volumes/xb/voiceover/VoiceOverStudio/\(llamaLibPath)",
-                ], .when(platforms: [.macOS]))
-            ]
-        ),
-        .target(
-            name: "SherpaOnnxC",
-            path: "Sources/SherpaOnnxC",
-            publicHeadersPath: "include",
-            linkerSettings: [
-                .linkedLibrary("c++"),
-                .unsafeFlags([
-                    "-L/Volumes/xb/voiceover/VoiceOverStudio/\(sherpaLibPath)",
-                    "-lsherpa-onnx",
-                    "-lonnxruntime",
-                ], .when(platforms: [.macOS])),
-                .linkedFramework("Foundation"),
                 .linkedFramework("Accelerate"),
+                .linkedFramework("Foundation"),
+                .linkedFramework("Metal"),
+                .linkedFramework("MetalKit"),
+                .linkedFramework("CoreFoundation"),
+                .linkedFramework("Security"),
+                .unsafeFlags([
+                    "-L\(llamaLibrarySearchPaths[0])",
+                    "-L\(llamaLibrarySearchPaths[1])",
+                    "-L\(llamaLibrarySearchPaths[2])",
+                    "-L\(llamaLibrarySearchPaths[3])",
+                    "-lllama",
+                    "-lggml",
+                    "-lggml-cpu",
+                    "-lggml-blas",
+                    "-lggml-metal",
+                    "-lggml-base",
+                ], .when(platforms: [.macOS]))
             ]
         ),
     ]

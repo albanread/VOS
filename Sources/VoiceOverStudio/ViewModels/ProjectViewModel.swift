@@ -13,7 +13,7 @@ import Darwin
 struct VoiceOption: Identifiable, Codable {
     let id: String
     let name: String
-    let sid: Int32
+    let prompt: String
 }
 
 private struct UncheckedSendable<T>: @unchecked Sendable {
@@ -24,7 +24,7 @@ private struct UncheckedSendable<T>: @unchecked Sendable {
 class ProjectViewModel: ObservableObject {
     @Published var paragraphs: [Paragraph] = []
     @Published var isProcessing = false
-    @Published var statusMessage = "Ready. Please configure model paths in Settings."
+    @Published var statusMessage = "Ready. Configure or download local models in Settings."
     @Published var isTTSReady = false
     @Published var isLLMReady = false
     @Published var isUpdatingModels = false
@@ -38,30 +38,18 @@ class ProjectViewModel: ObservableObject {
 
     private let llmDefaultFilename = "Llama-3.2-1B-Instruct-Q4_K_M.gguf"
     
-    // Model Paths (Saved in UserDefaults or just defined here)
+    // Model settings persisted in AppStorage.
     @AppStorage("modelPathLLM") var modelPathLLM: String = ""
-    // TTS Defaults (User needs to point to real files)
-    @AppStorage("modelPathTTS_vits") var modelPathTTS_vits: String = ""
-    @AppStorage("modelPathTTS_tokens") var modelPathTTS_tokens: String = ""
-    @AppStorage("modelPathTTS_dataDir") var modelPathTTS_dataDir: String = ""
+    @AppStorage("ttsModelRepo") var ttsModelRepo: String = TTSService.defaultModelRepo
     @AppStorage("modelDownloadDirectory") var modelDownloadDirectory: String = FileManager.default.homeDirectoryForCurrentUser
         .appendingPathComponent("Library/vos2026/downloads").path
     @AppStorage("modelUpdateURLLLM") var modelUpdateURLLLM: String = "https://huggingface.co/bartowski/Llama-3.2-1B-Instruct-GGUF/resolve/main/Llama-3.2-1B-Instruct-Q4_K_M.gguf?download=true"
-    @AppStorage("modelUpdateURLTTSPackage") var modelUpdateURLTTSPackage: String = "https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/vits-vctk.tar.bz2"
-    @AppStorage("modelUpdateURLTTSModel") var modelUpdateURLTTSModel: String = ""
-    @AppStorage("modelUpdateURLTTSTokens") var modelUpdateURLTTSTokens: String = ""
-    @AppStorage("modelPathTTS_lexicon") var modelPathTTS_lexicon: String = ""
     @AppStorage("modelComputeTier") var modelComputeTierRaw: String = ComputeTier.small.rawValue
     @AppStorage("defaultGap") var defaultGap: Double = 0.5
     @AppStorage("exportFormat") var exportFormatRaw: String = ExportFormat.m4a.rawValue
 
-    // Voice options mapped to speaker IDs (Dynamic)
+    // Voice presets exposed by the current Qwen TTS service.
     @Published var voiceOptions: [VoiceOption] = []
-    
-    // Tagging
-    let genderOptions = ["", "M", "F"]
-    let accentOptions = ["", "English", "Scottish", "Irish", "American", "Indian"]
-    let regionOptions = ["", "North", "South", "East", "West"]
 
     enum ExportFormat: String, CaseIterable, Codable {
         case m4a
@@ -86,8 +74,8 @@ class ProjectViewModel: ObservableObject {
     struct ModelRecommendation {
         let llmName: String
         let llmURL: String
-        let ttsPackageName: String
-        let ttsPackageURL: String
+        let ttsName: String
+        let ttsModelRepo: String
         let rationale: String
     }
 
@@ -102,25 +90,25 @@ class ProjectViewModel: ObservableObject {
             return ModelRecommendation(
                 llmName: "Llama-3.2-1B-Instruct Q4_K_M (~0.8GB)",
                 llmURL: "https://huggingface.co/bartowski/Llama-3.2-1B-Instruct-GGUF/resolve/main/Llama-3.2-1B-Instruct-Q4_K_M.gguf?download=true",
-                ttsPackageName: "vits-vctk (109 speakers, named)",
-                ttsPackageURL: "https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/vits-vctk.tar.bz2",
-                rationale: "Keeps LLM lightweight, and uses VCTK so users get 109 labeled voices with genders/accents."
+                ttsName: "Qwen3-TTS 0.6B Base 8bit",
+                ttsModelRepo: "mlx-community/Qwen3-TTS-12Hz-0.6B-Base-8bit",
+                rationale: "Fits smaller Apple Silicon machines while keeping local MLX speech generation responsive."
             )
         case .medium:
             return ModelRecommendation(
                 llmName: "Llama-3.2-3B-Instruct Q4_K_M (~2.0GB)",
                 llmURL: "https://huggingface.co/bartowski/Llama-3.2-3B-Instruct-GGUF/resolve/main/Llama-3.2-3B-Instruct-Q4_K_M.gguf?download=true",
-                ttsPackageName: "vits-vctk (109 speakers, named)",
-                ttsPackageURL: "https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/vits-vctk.tar.bz2",
-                rationale: "Better LLM plus VCTK voices with gender/accent metadata and a manageable list size."
+                ttsName: "Qwen3-TTS 1.7B VoiceDesign 8bit",
+                ttsModelRepo: "mlx-community/Qwen3-TTS-12Hz-1.7B-VoiceDesign-8bit",
+                rationale: "Balances better LLM guidance with a stronger Qwen TTS model for richer prompt-driven voices."
             )
         case .high:
             return ModelRecommendation(
                 llmName: "Meta-Llama-3.1-8B-Instruct Q4_K_M (~4.9GB)",
                 llmURL: "https://huggingface.co/bartowski/Meta-Llama-3.1-8B-Instruct-GGUF/resolve/main/Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf?download=true",
-                ttsPackageName: "vits-vctk (109 speakers, richer voice variety)",
-                ttsPackageURL: "https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/vits-vctk.tar.bz2",
-                rationale: "Uses available memory/compute for better language suggestions and clearer 109 labeled voices."
+                ttsName: "Qwen3-TTS 1.7B VoiceDesign bf16",
+                ttsModelRepo: "mlx-community/Qwen3-TTS-12Hz-1.7B-VoiceDesign-bf16",
+                rationale: "Targets higher-memory Macs where the larger VoiceDesign model can run locally without trading off quality."
             )
         }
     }
@@ -157,7 +145,7 @@ class ProjectViewModel: ObservableObject {
 
     // Model download URLs (informational; opens in browser)
     private let llmDownloadURL = URL(string: "https://huggingface.co/meta-llama/Llama-3.2-1B-Instruct-GGUF")
-    private let ttsDownloadURL = URL(string: "https://github.com/k2-fsa/sherpa-onnx/releases")
+    private let ttsDownloadURL = URL(string: "https://huggingface.co/mlx-community/Qwen3-TTS-12Hz-0.6B-Base-8bit")
     
     // Audio Player
     private var audioPlayer: AVAudioPlayer?
@@ -170,10 +158,6 @@ class ProjectViewModel: ObservableObject {
         rootModelsURL.appendingPathComponent("llm", isDirectory: true)
     }
 
-    private var ttsModelsURL: URL {
-        rootModelsURL.appendingPathComponent("tts", isDirectory: true)
-    }
-
     private var downloadsURL: URL {
         rootModelsURL.appendingPathComponent("downloads", isDirectory: true)
     }
@@ -184,6 +168,10 @@ class ProjectViewModel: ObservableObject {
 
     var managedModelsRootDisplay: String {
         rootModelsURL.path
+    }
+
+    var ttsCacheDisplay: String {
+        ttsService.cacheDirectoryPath
     }
 
     func shouldHideSettingsPaneOnLaunch() -> Bool {
@@ -206,7 +194,6 @@ class ProjectViewModel: ObservableObject {
         let fm = FileManager.default
         try? fm.createDirectory(at: rootModelsURL, withIntermediateDirectories: true)
         try? fm.createDirectory(at: llmModelsURL, withIntermediateDirectories: true)
-        try? fm.createDirectory(at: ttsModelsURL, withIntermediateDirectories: true)
         try? fm.createDirectory(at: downloadsURL, withIntermediateDirectories: true)
 
         // Always use managed folders; do not keep arbitrary remembered directories.
@@ -214,37 +201,13 @@ class ProjectViewModel: ObservableObject {
 
         // Reset to managed defaults each launch, then override with discovered files if present.
         modelPathLLM = llmModelsURL.appendingPathComponent(llmDefaultFilename).path
-        modelPathTTS_vits = ttsModelsURL.appendingPathComponent("model.onnx").path
-        modelPathTTS_tokens = ttsModelsURL.appendingPathComponent("tokens.txt").path
-        modelPathTTS_dataDir = ""
-        modelPathTTS_lexicon = ""
+        if ttsModelRepo.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            ttsModelRepo = TTSService.defaultModelRepo
+        }
 
         if let discoveredLLM = firstFile(in: llmModelsURL, matchingExtension: "gguf") {
             modelPathLLM = discoveredLLM.path
         }
-        // Prefer non-int8 ONNX model
-        if let discoveredTTS = firstNonInt8OnnxFile(in: ttsModelsURL)
-                               ?? firstFile(in: ttsModelsURL, matchingExtension: "onnx") {
-            modelPathTTS_vits = discoveredTTS.path
-        }
-        if let discoveredTokens = firstNamedFile(in: ttsModelsURL, filename: "tokens.txt") {
-            modelPathTTS_tokens = discoveredTokens.path
-        }
-        if let discoveredDataDir = firstNamedDirectory(in: ttsModelsURL, dirname: "espeak-ng-data") {
-            modelPathTTS_dataDir = discoveredDataDir.path
-        }
-        if let discoveredLexicon = firstNamedFile(in: ttsModelsURL, filename: "lexicon.txt") {
-            modelPathTTS_lexicon = discoveredLexicon.path
-        }
-    }
-
-    private func firstNonInt8OnnxFile(in folder: URL) -> URL? {
-        guard let enumerator = FileManager.default.enumerator(at: folder, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]) else { return nil }
-        for case let url as URL in enumerator
-            where url.pathExtension.lowercased() == "onnx" && !url.lastPathComponent.contains(".int8.") {
-            return url
-        }
-        return nil
     }
 
     private func firstFile(in folder: URL, matchingExtension ext: String) -> URL? {
@@ -257,38 +220,13 @@ class ProjectViewModel: ObservableObject {
         return nil
     }
 
-    private func firstNamedFile(in folder: URL, filename: String) -> URL? {
-        guard let enumerator = FileManager.default.enumerator(at: folder, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]) else {
-            return nil
-        }
-        for case let url as URL in enumerator where url.lastPathComponent == filename {
-            return url
-        }
-        return nil
-    }
-
-    private func firstNamedDirectory(in folder: URL, dirname: String) -> URL? {
-        guard let enumerator = FileManager.default.enumerator(at: folder, includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles]) else {
-            return nil
-        }
-        for case let url as URL in enumerator where url.lastPathComponent == dirname {
-            return url
-        }
-        return nil
-    }
-
     private func requiredModelArtifactsPresent() -> Bool {
-        let corePaths = [modelPathLLM, modelPathTTS_vits, modelPathTTS_tokens]
-        guard !corePaths.contains(where: { $0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }) else {
+        let llmPath = modelPathLLM.trimmingCharacters(in: .whitespacesAndNewlines)
+        let qwenRepo = ttsModelRepo.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !llmPath.isEmpty, !qwenRepo.isEmpty else {
             return false
         }
-        guard corePaths.allSatisfy({ FileManager.default.fileExists(atPath: $0) }) else {
-            return false
-        }
-        // Model also needs either espeak-ng-data OR a lexicon file
-        let hasDataDir = !modelPathTTS_dataDir.isEmpty && FileManager.default.fileExists(atPath: modelPathTTS_dataDir)
-        let hasLexicon = !modelPathTTS_lexicon.isEmpty && FileManager.default.fileExists(atPath: modelPathTTS_lexicon)
-        return hasDataDir || hasLexicon
+        return FileManager.default.fileExists(atPath: llmPath) && ttsService.isModelCached(modelRepo: qwenRepo)
     }
 
     /// Check if the recommended LLM file is already present and fresh enough to skip re-download.
@@ -326,50 +264,94 @@ class ProjectViewModel: ObservableObject {
     
     func initializeEngines() {
         Task {
-            guard !isProcessing else { return }
+            await initializeEngines(managesProcessingState: true)
+        }
+    }
 
+    private func initializeEngines(managesProcessingState: Bool) async {
+        if managesProcessingState, isProcessing {
+            return
+        }
+
+        if managesProcessingState {
             isProcessing = true
-            statusMessage = "Engine starting..."
-            isTTSReady = false
-            isLLMReady = false
-            
-            do {
-                if !modelPathTTS_vits.isEmpty && !modelPathTTS_tokens.isEmpty {
-                    try await ttsService.initializeTTS(modelPath: modelPathTTS_vits, tokensPath: modelPathTTS_tokens, dataDir: modelPathTTS_dataDir, lexicon: modelPathTTS_lexicon)
-                    isTTSReady = true
-                    
-                    // Refresh voice options — use direct accessor to avoid [String:Any] cast issues
-                    let newOptions = ttsService.voiceOptionsList
-                    debugLog("DEBUG:: [VM] Loaded \(newOptions.count) voice options")
-                    for opt in newOptions.prefix(10) {
-                        debugLog("DEBUG:: [VM]   voiceOptions entry: sid=\(opt.sid) name='\(opt.name)' id='\(opt.id)'")
-                    }
-                    // Since we are already on MainActor
-                    self.voiceOptions = newOptions
-
-                    // Nothing to remap: paragraphs store voiceSid (Int32) directly.
-                }
-                
-                if !modelPathLLM.isEmpty {
-                    try await llmService.loadModel(path: modelPathLLM)
-                    isLLMReady = true
-                }
-
-                if isTTSReady || isLLMReady {
-                    statusMessage = "Engine started."
-                } else {
-                    statusMessage = "Engine start skipped: model paths missing."
-                }
-            } catch {
-                statusMessage = "Initialization Error: \(error.localizedDescription)"
+        }
+        defer {
+            if managesProcessingState {
+                isProcessing = false
             }
-            
+        }
+
+        statusMessage = "Engine starting..."
+        isTTSReady = false
+        isLLMReady = false
+
+        do {
+            if !ttsModelRepo.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                try await ttsService.initializeTTS(modelRepo: ttsModelRepo)
+                isTTSReady = true
+                let newOptions = ttsService.voiceOptionsList
+                debugLog("DEBUG:: [VM] Loaded \(newOptions.count) Qwen voice presets")
+                voiceOptions = newOptions
+                remapParagraphVoicesIfNeeded()
+            }
+
+            if !modelPathLLM.isEmpty {
+                try await llmService.loadModel(path: modelPathLLM)
+                isLLMReady = true
+            }
+
+            if isTTSReady || isLLMReady {
+                statusMessage = "Engine started."
+            } else {
+                statusMessage = "Engine start skipped: configure a Qwen repo or GGUF model first."
+            }
+        } catch {
+            statusMessage = "Initialization Error: \(error.localizedDescription)"
+        }
+    }
+
+    func downloadTTSModel() async {
+        let repo = ttsModelRepo.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !repo.isEmpty else {
+            statusMessage = "Set the Qwen TTS model repo first."
+            return
+        }
+
+        isUpdatingModels = true
+        isProcessing = true
+        modelUpdateProgress = 0.0
+        modelUpdateNarrative = "Preparing Qwen model download..."
+        defer {
+            isUpdatingModels = false
             isProcessing = false
+        }
+
+        do {
+            _ = try await ttsService.downloadModel(modelRepo: repo) { progress in
+                self.modelUpdateProgress = max(0.0, min(progress.fractionCompleted, 1.0))
+                let percent = Int((progress.fractionCompleted * 100.0).rounded())
+                self.modelUpdateNarrative = "Downloading Qwen TTS model... \(percent)%"
+            }
+            modelUpdateProgress = 0.92
+            modelUpdateNarrative = "Loading downloaded Qwen model..."
+            try await ttsService.initializeTTS(modelRepo: repo)
+            isTTSReady = true
+            voiceOptions = ttsService.voiceOptionsList
+            remapParagraphVoicesIfNeeded()
+            modelUpdateProgress = 1.0
+            modelUpdateNarrative = "Qwen model downloaded and ready."
+            statusMessage = "Qwen model ready."
+            try? await Task.sleep(nanoseconds: 1_500_000_000)
+            modelUpdateNarrative = "Idle"
+        } catch {
+            modelUpdateNarrative = "Qwen download failed."
+            statusMessage = "Qwen model download failed: \(error.localizedDescription)"
         }
     }
     
     func addParagraph() {
-        var p = Paragraph(text: "New paragraph text here.", voiceSid: voiceOptions.first?.sid ?? 0)
+        var p = Paragraph(text: "New paragraph text here.", voiceID: voiceOptions.first?.id ?? "narrator_clear")
         if p.outputFilename.isEmpty {
             p.outputFilename = "para_\(p.id.uuidString.prefix(8)).wav"
         }
@@ -385,70 +367,6 @@ class ProjectViewModel: ObservableObject {
         setAllowedContentTypes(panel, extensions: ["gguf"])
         if panel.runModal() == .OK, let url = panel.url {
             modelPathLLM = url.path
-        }
-    }
-
-    func pickTTSModelFile() {
-        let panel = NSOpenPanel()
-        panel.canChooseDirectories = false
-        panel.canChooseFiles = true
-        panel.allowsMultipleSelection = false
-        setAllowedContentTypes(panel, extensions: ["onnx"])
-        if panel.runModal() == .OK, let url = panel.url {
-            modelPathTTS_vits = url.path
-        }
-    }
-
-    func setVoiceGender(sid: Int32, gender: String) {
-        var tag = VoiceTagService.shared.getTag(for: sid) ?? UserVoiceTag()
-        tag.gender = gender.isEmpty ? nil : gender
-        VoiceTagService.shared.setTag(for: sid, tag: tag)
-        objectWillChange.send()
-    }
-
-    func setVoiceAccent(sid: Int32, accent: String) {
-        var tag = VoiceTagService.shared.getTag(for: sid) ?? UserVoiceTag()
-        tag.accent = accent.isEmpty ? nil : accent
-        VoiceTagService.shared.setTag(for: sid, tag: tag)
-        objectWillChange.send()
-    }
-
-    func setVoiceRegion(sid: Int32, region: String) {
-        var tag = VoiceTagService.shared.getTag(for: sid) ?? UserVoiceTag()
-        tag.region = region.isEmpty ? nil : region
-        VoiceTagService.shared.setTag(for: sid, tag: tag)
-        objectWillChange.send()
-    }
-
-    func setVoiceQuality(sid: Int32, quality: Int) {
-        var tag = VoiceTagService.shared.getTag(for: sid) ?? UserVoiceTag()
-        tag.quality = quality
-        VoiceTagService.shared.setTag(for: sid, tag: tag)
-        objectWillChange.send()
-    }
-
-    func getVoiceTag(sid: Int32) -> UserVoiceTag? {
-        VoiceTagService.shared.getTag(for: sid)
-    }
-
-    func pickTTSTokensFile() {
-        let panel = NSOpenPanel()
-        panel.canChooseDirectories = false
-        panel.canChooseFiles = true
-        panel.allowsMultipleSelection = false
-        setAllowedContentTypes(panel, extensions: ["txt"])
-        if panel.runModal() == .OK, let url = panel.url {
-            modelPathTTS_tokens = url.path
-        }
-    }
-
-    func pickTTSDataDir() {
-        let panel = NSOpenPanel()
-        panel.canChooseDirectories = true
-        panel.canChooseFiles = false
-        panel.allowsMultipleSelection = false
-        if panel.runModal() == .OK, let url = panel.url {
-            modelPathTTS_dataDir = url.path
         }
     }
 
@@ -475,7 +393,7 @@ class ProjectViewModel: ObservableObject {
     func applyRecommendedModelPreset() {
         let preset = currentRecommendation
         modelUpdateURLLLM = preset.llmURL
-        modelUpdateURLTTSPackage = preset.ttsPackageURL
+        ttsModelRepo = preset.ttsModelRepo
         statusMessage = "Applied \(modelComputeTier.title) model preset."
     }
 
@@ -500,98 +418,6 @@ class ProjectViewModel: ObservableObject {
             self.modelPathLLM = downloadedPath
         }
         modelUpdateNarrative = "LLM update finished."
-    }
-
-    func updateLatestTTSModel() async {
-        isUpdatingModels = true
-        isProcessing = true
-        modelUpdateProgress = 0.0
-        modelUpdateNarrative = "Preparing TTS model update..."
-        defer {
-            isUpdatingModels = false
-            isProcessing = false
-            modelUpdateProgress = 1.0
-        }
-
-        modelUpdateNarrative = "Downloading TTS model..."
-        _ = await updateModelFromURL(
-            urlString: modelUpdateURLTTSModel,
-            label: "TTS model",
-            destinationDir: ttsModelsURL,
-            preferredFilename: nil
-        ) { downloadedPath in
-            self.modelPathTTS_vits = downloadedPath
-        }
-        modelUpdateNarrative = "TTS model update finished."
-    }
-
-    func updateLatestTTSPackage() async {
-        isUpdatingModels = true
-        isProcessing = true
-        modelUpdateProgress = 0.0
-        modelUpdateNarrative = "Preparing TTS package update..."
-        defer {
-            isUpdatingModels = false
-            isProcessing = false
-            modelUpdateProgress = 1.0
-        }
-
-        let trimmed = modelUpdateURLTTSPackage.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else {
-            statusMessage = "Set the TTS package URL first."
-            return
-        }
-        guard let sourceURL = URL(string: trimmed) else {
-            statusMessage = "Invalid TTS package URL."
-            return
-        }
-
-        let destinationDir = ttsModelsURL
-        do {
-            statusMessage = "Downloading TTS package..."
-            modelUpdateNarrative = "Downloading TTS package archive..."
-            modelUpdateProgress = 0.2
-            let archiveURL = try await modelUpdater.downloadFile(from: sourceURL, into: destinationDir, preferredFilename: nil)
-            modelUpdateNarrative = "Extracting TTS package..."
-            modelUpdateProgress = 0.6
-            let extractedRoot = try modelUpdater.extractTarBz2(archiveURL: archiveURL, into: destinationDir)
-            modelUpdateNarrative = "Indexing TTS files..."
-            modelUpdateProgress = 0.85
-            let files = try modelUpdater.findTTSFiles(in: extractedRoot)
-
-            modelPathTTS_vits = files.model.path
-            modelPathTTS_tokens = files.tokens.path
-            modelPathTTS_dataDir = files.dataDir?.path ?? ""
-            modelPathTTS_lexicon = files.lexicon?.path ?? ""
-            statusMessage = "Updated TTS package: \(extractedRoot.lastPathComponent)"
-            modelUpdateNarrative = "TTS package update finished."
-        } catch {
-            statusMessage = "TTS package update failed: \(error.localizedDescription)"
-            modelUpdateNarrative = "TTS package update failed."
-        }
-    }
-
-    func updateLatestTTSTokens() async {
-        isUpdatingModels = true
-        isProcessing = true
-        modelUpdateProgress = 0.0
-        modelUpdateNarrative = "Preparing TTS tokens update..."
-        defer {
-            isUpdatingModels = false
-            isProcessing = false
-            modelUpdateProgress = 1.0
-        }
-
-        modelUpdateNarrative = "Downloading TTS tokens..."
-        _ = await updateModelFromURL(
-            urlString: modelUpdateURLTTSTokens,
-            label: "TTS tokens",
-            destinationDir: ttsModelsURL,
-            preferredFilename: "tokens.txt"
-        ) { downloadedPath in
-            self.modelPathTTS_tokens = downloadedPath
-        }
-        modelUpdateNarrative = "TTS tokens update finished."
     }
 
     func autoSetup() async {
@@ -632,38 +458,31 @@ class ProjectViewModel: ObservableObject {
         }
         modelUpdateProgress = 0.4
 
-        // 3. Download & Extract TTS Package
-        modelUpdateNarrative = "Checking TTS package..."
-        var ttsSuccess = false
-        if let sourceURL = URL(string: modelUpdateURLTTSPackage) {
-            do {
-                modelUpdateNarrative = "Downloading TTS package..."
-                let archiveURL = try await modelUpdater.downloadFile(from: sourceURL, into: ttsModelsURL, preferredFilename: nil)
-                
-                modelUpdateNarrative = "Extracting TTS package..."
-                modelUpdateProgress = 0.6
-                let extractedRoot = try modelUpdater.extractTarBz2(archiveURL: archiveURL, into: ttsModelsURL)
-                
-                modelUpdateNarrative = "Verifying TTS files..."
-                let files = try modelUpdater.findTTSFiles(in: extractedRoot)
-                
-                modelPathTTS_vits = files.model.path
-                modelPathTTS_tokens = files.tokens.path
-                modelPathTTS_dataDir = files.dataDir?.path ?? ""
-                modelPathTTS_lexicon = files.lexicon?.path ?? ""
-                ttsSuccess = true
-                modelUpdateNarrative = "TTS Package Ready."
-            } catch {
-                modelUpdateNarrative = "TTS Setup Failed: \(error.localizedDescription)"
-                print("TTS AutoSetup Error: \(error)")
+        // 3. Apply the recommended Qwen model repo.
+        modelUpdateNarrative = "Downloading Qwen TTS model..."
+        ttsModelRepo = currentRecommendation.ttsModelRepo
+        let ttsSuccess: Bool
+        do {
+            _ = try await ttsService.downloadModel(modelRepo: ttsModelRepo) { progress in
+                let baseProgress = 0.4
+                let scaledProgress = baseProgress + (progress.fractionCompleted * 0.4)
+                self.modelUpdateProgress = max(baseProgress, min(scaledProgress, 0.8))
+                let percent = Int((progress.fractionCompleted * 100.0).rounded())
+                self.modelUpdateNarrative = "Downloading Qwen TTS model... \(percent)%"
             }
+            ttsSuccess = true
+            modelUpdateNarrative = "Qwen model ready."
+        } catch {
+            ttsSuccess = false
+            modelUpdateNarrative = "Qwen setup failed: \(error.localizedDescription)"
+            statusMessage = "Qwen setup failed: \(error.localizedDescription)"
         }
         modelUpdateProgress = 0.8
 
         // 4. Initialize Engines
         if llmSuccess && ttsSuccess {
             modelUpdateNarrative = "Initializing Engines..."
-            initializeEngines()
+            await initializeEngines(managesProcessingState: false)
             modelUpdateProgress = 1.0
             modelUpdateNarrative = "Auto Setup Complete! You are ready to create."
             statusMessage = "System Ready."
@@ -772,19 +591,19 @@ class ProjectViewModel: ObservableObject {
         statusMessage = "Generating audio for paragraph \(index + 1)..."
         
         let text = paragraphs[index].text
-        let sid = paragraphs[index].voiceSid
-        let pickerLabel = voiceOptions.first(where: { $0.sid == sid })?.name ?? "(sid not found in voiceOptions!)"
+        let voiceID = paragraphs[index].voiceID
+        let pickerLabel = voiceOptions.first(where: { $0.id == voiceID })?.name ?? "(voice not found in presets)"
         debugLog("DEBUG:: ═════════════════════════════════════")
         debugLog("DEBUG:: [VM] Generate paragraph \(index + 1)")
-        debugLog("DEBUG:: [VM]   voiceSid in paragraph : \(sid)")
-        debugLog("DEBUG:: [VM]   picker label for sid  : \(pickerLabel)")
+        debugLog("DEBUG:: [VM]   voice ID             : \(voiceID)")
+        debugLog("DEBUG:: [VM]   picker label         : \(pickerLabel)")
         debugLog("DEBUG:: [VM]   voiceOptions count    : \(voiceOptions.count)")
         debugLog("DEBUG:: [VM]   text (first 80)       : \(text.prefix(80))")
         let speed = paragraphs[index].speed
         let filename = paragraphs[index].outputFilename.isEmpty ? "para_\(id.uuidString).wav" : paragraphs[index].outputFilename
         let outputPath = documentsURL.appendingPathComponent(filename).path
 
-        let success = await ttsService.generateAudio(text: text, outputFile: outputPath, sid: sid, speed: speed)
+        let success = await ttsService.generateAudio(text: text, outputFile: outputPath, voiceID: voiceID, speed: speed)
         
         if success {
             paragraphs[index].audioPath = outputPath
@@ -928,18 +747,22 @@ class ProjectViewModel: ObservableObject {
             let voiceName = nsString.substring(with: voiceRange)
             let content = nsString.substring(with: contentRange).trimmingCharacters(in: .whitespacesAndNewlines)
             
-            // Map role name directly to a VCTK sid (from the ground-truth table)
-            let voiceSid: Int32
+            let voiceID: String
             switch voiceName {
-            case "Narrator F":  voiceSid = 4   // p229, F, S.England
-            case "Narrator M":  voiceSid = 1   // p226, M, Surrey
-            case "Character 1": voiceSid = 61  // p294, F, San Francisco
-            case "Character 2": voiceSid = 83  // p330, M, California
-            default:            voiceSid = voiceOptions.first?.sid ?? 0
+            case "Narrator F":
+                voiceID = "narrator_warm"
+            case "Narrator M":
+                voiceID = "narrator_clear"
+            case "Character 1":
+                voiceID = "character_bright"
+            case "Character 2":
+                voiceID = "character_deep"
+            default:
+                voiceID = voiceOptions.first?.id ?? "narrator_clear"
             }
             
             if !content.isEmpty {
-                generatedParagraphs.append(Paragraph(text: content, voiceSid: voiceSid))
+                generatedParagraphs.append(Paragraph(text: content, voiceID: voiceID))
             }
         }
         
@@ -1020,6 +843,18 @@ class ProjectViewModel: ObservableObject {
                     self.statusMessage = "Export failed: \(exportSession.error?.localizedDescription ?? "Unknown error")"
                 }
             }
+        }
+    }
+
+    private func remapParagraphVoicesIfNeeded() {
+        guard let defaultVoiceID = voiceOptions.first?.id else { return }
+        paragraphs = paragraphs.map { paragraph in
+            guard voiceOptions.contains(where: { $0.id == paragraph.voiceID }) else {
+                var updated = paragraph
+                updated.voiceID = defaultVoiceID
+                return updated
+            }
+            return paragraph
         }
     }
 }
