@@ -104,7 +104,8 @@ class TTSService: ObservableObject {
         text: String,
         outputFile: String,
         voiceID: String,
-        speed _: Float = 1.0,
+        speed: Float = 1.0,
+        pitchSemitones: Float = 0.0,
         callback _: ((Float) -> Void)? = nil
     ) async -> Bool {
         guard let loadedModel = model else {
@@ -120,6 +121,7 @@ class TTSService: ObservableObject {
 
         let modelBox = UncheckedSendableModel(value: loadedModel)
         let voicePrompt = speakerOptions.first(where: { $0.id == voiceID })?.prompt
+        let clampedSpeed = max(0.5, min(speed, 2.0))
 
         let result = await Task.detached(priority: .userInitiated) { () -> Bool in
             do {
@@ -145,10 +147,19 @@ class TTSService: ObservableObject {
 
                 try AudioUtils.writeWavFile(
                     samples: samples,
-                    sampleRate: Double(modelBox.value.sampleRate),
+                    sampleRate: Double(modelBox.value.sampleRate) * Double(clampedSpeed),
                     fileURL: URL(fileURLWithPath: outputFile)
                 )
                 debugLog("DEBUG:: [TTS]   wrote \(samples.count) samples → \(outputFile)")
+
+                if pitchSemitones != 0.0 {
+                    try AudioPostProcessor.applyPitch(
+                        semitones: pitchSemitones,
+                        fileURL: URL(fileURLWithPath: outputFile)
+                    )
+                    debugLog("DEBUG:: [TTS]   applied pitch shift: \(pitchSemitones) semitones")
+                }
+
                 return true
             } catch {
                 debugLog("DEBUG:: [TTS] Generation failed: \(error.localizedDescription)")

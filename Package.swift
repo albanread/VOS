@@ -38,7 +38,10 @@ let package = Package(
                 .product(name: "MLX", package: "mlx-swift"),
                 .product(name: "HuggingFace", package: "swift-huggingface"),
             ],
-            path: "Sources/VoiceOverStudio"
+            path: "Sources/VoiceOverStudio",
+            resources: [
+                .copy("Resources/default.metallib")
+            ]
         ),
         .target(
             name: "LLamaC",

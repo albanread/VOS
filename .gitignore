@@ -31,3 +31,6 @@ ThirdParty/**/lib/
 ThirdParty/**/install/
 ThirdParty/**/dist/
 ThirdParty/**/node_modules/
+
+# Built Metal shader library (regenerate with Scripts/build-mlx-metallib.sh)
+*.metallib

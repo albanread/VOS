@@ -42,8 +42,11 @@ struct ContentView: View {
                                          onRemove: {
                                              viewModel.removeParagraph(paragraph.id)
                                          })
+                            .frame(maxWidth: 980)
+                            .frame(maxWidth: .infinity, alignment: .center)
                         }
                     }
+                    .frame(maxWidth: .infinity, alignment: .top)
                     .padding(.horizontal, 12)
                     .padding(.top, 12)
                     .padding(.bottom, 16)
@@ -288,107 +291,142 @@ struct ParagraphRow: View {
     var onRephrase: () -> Void
     var onDuplicate: () -> Void
     var onRemove: () -> Void
-    
-    var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HSplitView {
-                // Text Area works better than TextEditor for shorter lines, but TextEditor is standard
-                TextEditor(text: $paragraph.text)
-                    .font(.body)
-                    .frame(minWidth: 260, idealWidth: 380, maxWidth: 480, minHeight: 200, alignment: .topLeading)
-                    .layoutPriority(1)
-                    .padding(4)
-                    .background(Color(NSColor.textBackgroundColor))
-                    .cornerRadius(5)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 5)
-                            .stroke(Color.gray.opacity(0.2), lineWidth: 1)
-                    )
 
-                // Controls for this paragraph
-                VStack(alignment: .leading) {
-                    Button(action: onImprove) {
-                        Label("Improve", systemImage: "wand.and.stars")
-                    }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-                    .disabled(!isLLMReady || paragraph.isGenerating)
-                    .help("Optimise text for TTS: expand numbers, add pauses, fix pronunciation")
+    private var textEditorPanel: some View {
+        TextEditor(text: $paragraph.text)
+            .font(.body)
+            .frame(minHeight: 220, alignment: .topLeading)
+            .padding(4)
+            .background(Color(NSColor.textBackgroundColor))
+            .cornerRadius(5)
+            .overlay(
+                RoundedRectangle(cornerRadius: 5)
+                    .stroke(Color.gray.opacity(0.2), lineWidth: 1)
+            )
+    }
 
-                    Button(action: onRephrase) {
-                        Label("Rephrase", systemImage: "text.quote")
-                    }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-                    .disabled(!isLLMReady || paragraph.isGenerating)
-                    .help("Rephrase for spoken clarity: simplify sentences, improve flow")
+    private var controlsPanel: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 6) {
+                Button(action: onImprove) {
+                    Label("Improve", systemImage: "wand.and.stars")
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .disabled(!isLLMReady || paragraph.isGenerating)
+                .help("Optimise text for TTS: expand numbers, add pauses, fix pronunciation")
 
-                    Button(action: onDuplicate) {
-                        Label("Duplicate", systemImage: "plus.square.on.square")
-                    }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
+                Button(action: onRephrase) {
+                    Label("Rephrase", systemImage: "text.quote")
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .disabled(!isLLMReady || paragraph.isGenerating)
+                .help("Rephrase for spoken clarity: simplify sentences, improve flow")
+            }
 
-                    Button(action: onRemove) {
-                        Label("Remove", systemImage: "trash")
-                    }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-                    
-                    Divider().padding(.vertical, 5)
-                    
-                    Text("Voice")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    Picker("Voice", selection: $paragraph.voiceID) {
-                        ForEach(voiceOptions) { option in
-                            Text(option.name).tag(option.id)
-                        }
-                    }
-                    .labelsHidden()
+            HStack(spacing: 6) {
+                Button(action: onDuplicate) {
+                    Label("Duplicate", systemImage: "plus.square.on.square")
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
 
-                    Divider().padding(.vertical, 5)
+                Button(action: onRemove) {
+                    Label("Remove", systemImage: "trash")
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+            }
 
-                    Text("Output name")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    TextField("para_x.wav", text: $paragraph.outputFilename)
-                        .textFieldStyle(.roundedBorder)
-                        .frame(width: 140)
+            Divider().padding(.vertical, 2)
 
-                    Divider().padding(.vertical, 5)
+            Text("Voice")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Picker("Voice", selection: $paragraph.voiceID) {
+                ForEach(voiceOptions) { option in
+                    Text(option.name).tag(option.id)
+                }
+            }
+            .labelsHidden()
 
-                    Text("Gap after:")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    
-                    HStack {
-                        TextField("0.5", value: $paragraph.gapDuration, format: .number)
-                            .textFieldStyle(.roundedBorder)
-                            .frame(width: 40)
-                        Text("sec")
-                            .font(.caption)
-                    }
+            Divider().padding(.vertical, 2)
 
-                    Divider().padding(.vertical, 5)
+            Text("Output name")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            TextField("para_x.wav", text: $paragraph.outputFilename)
+                .textFieldStyle(.roundedBorder)
 
+            Divider().padding(.vertical, 2)
+
+            HStack {
+                Text("Gap after:")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                TextField("0.5", value: $paragraph.gapDuration, format: .number)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(width: 50)
+                Text("sec")
+                    .font(.caption)
+            }
+
+            Divider().padding(.vertical, 2)
+
+            HStack(spacing: 10) {
+                HStack(spacing: 4) {
                     Text("Speed:")
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                    Picker("", selection: $paragraph.speed) {
+                        ForEach(Paragraph.SpeedPreset.allCases, id: \.self) { preset in
+                            Text(preset.label).tag(preset)
+                        }
+                    }
+                    .labelsHidden()
+                    .frame(width: 80)
+                }
 
-                    HStack {
-                        TextField("1.0", value: $paragraph.speed, format: .number)
-                            .textFieldStyle(.roundedBorder)
-                            .frame(width: 40)
-                        Text("×")
-                            .font(.caption)
+                HStack(spacing: 4) {
+                    Text("Pitch:")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Picker("", selection: $paragraph.pitch) {
+                        ForEach(Paragraph.PitchPreset.allCases, id: \.self) { preset in
+                            Text(preset.label).tag(preset)
+                        }
+                    }
+                    .labelsHidden()
+                    .frame(width: 80)
+                }
+            }
+        }
+    }
+    
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            GeometryReader { geometry in
+                let useVerticalLayout = geometry.size.width < 820
+
+                Group {
+                    if useVerticalLayout {
+                        VStack(alignment: .leading, spacing: 12) {
+                            textEditorPanel
+                            controlsPanel
+                        }
+                    } else {
+                        HStack(alignment: .top, spacing: 12) {
+                            textEditorPanel
+                                .frame(minWidth: 320, maxWidth: .infinity)
+                            controlsPanel
+                                .frame(width: 240, alignment: .topLeading)
+                        }
                     }
                 }
-                .frame(minWidth: 200, idealWidth: 220, maxWidth: 280)
-                .padding(.leading, 8)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             }
-            .frame(maxWidth: .infinity, minHeight: 260, alignment: .top)
-            .frame(minHeight: 260, alignment: .top)
+            .frame(height: 380)
             
             HStack {
                 Button(action: onGenerate) {

@@ -287,6 +287,8 @@ class ProjectViewModel: ObservableObject {
         isLLMReady = false
 
         do {
+            try MLXMetalLibraryBootstrap.stageIfNeeded()
+
             if !ttsModelRepo.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 try await ttsService.initializeTTS(modelRepo: ttsModelRepo)
                 isTTSReady = true
@@ -599,11 +601,12 @@ class ProjectViewModel: ObservableObject {
         debugLog("DEBUG:: [VM]   picker label         : \(pickerLabel)")
         debugLog("DEBUG:: [VM]   voiceOptions count    : \(voiceOptions.count)")
         debugLog("DEBUG:: [VM]   text (first 80)       : \(text.prefix(80))")
-        let speed = paragraphs[index].speed
+        let speed = paragraphs[index].speed.rate
+        let pitchSemitones = paragraphs[index].pitch.semitones
         let filename = paragraphs[index].outputFilename.isEmpty ? "para_\(id.uuidString).wav" : paragraphs[index].outputFilename
         let outputPath = documentsURL.appendingPathComponent(filename).path
 
-        let success = await ttsService.generateAudio(text: text, outputFile: outputPath, voiceID: voiceID, speed: speed)
+        let success = await ttsService.generateAudio(text: text, outputFile: outputPath, voiceID: voiceID, speed: speed, pitchSemitones: pitchSemitones)
         
         if success {
             paragraphs[index].audioPath = outputPath
