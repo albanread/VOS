@@ -15,67 +15,91 @@ struct ContentView: View {
             settingsPane
                 .navigationSplitViewColumnWidth(min: 280, ideal: 320, max: 360)
         } detail: {
-            VStack(spacing: 0) {
-                ScrollView(.vertical) {
-                    LazyVStack(alignment: .leading, spacing: 10) {
-                        ForEach($viewModel.paragraphs) { $paragraph in
-                            ParagraphRow(paragraph: $paragraph,
-                                         voiceOptions: viewModel.voiceOptions,
-                                         isTTSReady: viewModel.isTTSReady,
-                                         isLLMReady: viewModel.isLLMReady,
-                                         viewModel: viewModel,
-                                         onGenerate: {
-                                             Task { await viewModel.generateAudio(for: paragraph.id) }
-                                         },
-                                         onPlay: {
-                                             viewModel.playAudio(for: paragraph.id)
-                                         },
-                                         onImprove: {
-                                             Task { await viewModel.improveText(for: paragraph.id) }
-                                         },
-                                         onRephrase: {
-                                             Task { await viewModel.rephraseText(for: paragraph.id) }
-                                         },
-                                         onDuplicate: {
-                                             viewModel.duplicateParagraph(paragraph.id)
-                                         },
-                                         onRemove: {
-                                             viewModel.removeParagraph(paragraph.id)
-                                         })
-                            .frame(maxWidth: 980)
-                            .frame(maxWidth: .infinity, alignment: .center)
+            HStack(spacing: 0) {
+                VStack(spacing: 0) {
+                    ScrollView(.vertical) {
+                        LazyVStack(alignment: .leading, spacing: 10) {
+                            ForEach($viewModel.paragraphs) { $paragraph in
+                                ParagraphRow(paragraph: $paragraph,
+                                             voiceOptions: viewModel.voiceOptions,
+                                             isTTSReady: viewModel.isTTSReady,
+                                             isLLMReady: viewModel.isLLMReady,
+                                             viewModel: viewModel,
+                                             onGenerate: {
+                                                 Task { await viewModel.generateAudio(for: paragraph.id) }
+                                             },
+                                             onPlay: {
+                                                 viewModel.playAudio(for: paragraph.id)
+                                             },
+                                             onImprove: {
+                                                 Task { await viewModel.improveText(for: paragraph.id) }
+                                             },
+                                             onRephrase: {
+                                                 Task { await viewModel.rephraseText(for: paragraph.id) }
+                                             },
+                                             onDuplicate: {
+                                                 viewModel.duplicateParagraph(paragraph.id)
+                                             },
+                                             onRemove: {
+                                                 viewModel.removeParagraph(paragraph.id)
+                                             },
+                                             onConfigureVoice: {
+                                                 viewModel.openVoiceConfiguration(for: paragraph.id)
+                                             },
+                                             onVoiceSelectionChanged: { selectedVoiceID in
+                                                 viewModel.handleVoiceSelectionChange(for: paragraph.id, voiceID: selectedVoiceID)
+                                             })
+                                .frame(maxWidth: 980)
+                                .frame(maxWidth: .infinity, alignment: .center)
+                            }
                         }
+                        .frame(maxWidth: .infinity, alignment: .top)
+                        .padding(.horizontal, 12)
+                        .padding(.top, 12)
+                        .padding(.bottom, 16)
                     }
-                    .frame(maxWidth: .infinity, alignment: .top)
-                    .padding(.horizontal, 12)
-                    .padding(.top, 12)
-                    .padding(.bottom, 16)
-                }
-                .defaultScrollAnchor(.top)
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                    .defaultScrollAnchor(.top)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
 
-                HStack {
-                    Text(viewModel.statusMessage)
-                        .font(.callout)
-                        .foregroundStyle(viewModel.isProcessing ? .blue : .secondary)
-                    if viewModel.isProcessing {
-                        ProgressView().controlSize(.small)
+                    HStack {
+                        Text(viewModel.statusMessage)
+                            .font(.callout)
+                            .foregroundStyle(viewModel.isProcessing ? .blue : .secondary)
+                        if viewModel.isProcessing {
+                            ProgressView().controlSize(.small)
+                        }
+                        Spacer()
+                        Text("Paragraphs: \(viewModel.paragraphs.count)")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
                     }
-                    Spacer()
-                    Text("Paragraphs: \(viewModel.paragraphs.count)")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+                    .background(Color(NSColor.controlBackgroundColor))
+                    .overlay(
+                        Rectangle()
+                            .frame(height: 1)
+                            .foregroundColor(Color.gray.opacity(0.2)),
+                        alignment: .top
+                    )
                 }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 8)
-                .background(Color(NSColor.controlBackgroundColor))
-                .overlay(
-                    Rectangle()
-                        .frame(height: 1)
-                        .foregroundColor(Color.gray.opacity(0.2)),
-                    alignment: .top
-                )
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+                if viewModel.isVoiceConfigurationPanePresented {
+                    voiceConfigurationPane
+                        .frame(width: 340)
+                        .frame(maxHeight: .infinity)
+                        .background(Color(NSColor.windowBackgroundColor))
+                        .overlay(alignment: .leading) {
+                            Rectangle()
+                                .frame(width: 1)
+                                .foregroundStyle(Color.gray.opacity(0.2))
+                        }
+                        .shadow(color: .black.opacity(0.12), radius: 10, x: -2, y: 0)
+                        .transition(.move(edge: .trailing).combined(with: .opacity))
+                }
             }
+            .animation(.easeInOut(duration: 0.2), value: viewModel.isVoiceConfigurationPanePresented)
             .toolbar {
                 ToolbarItemGroup {
                     Button(action: viewModel.addParagraph) {
@@ -112,10 +136,33 @@ struct ContentView: View {
             ReferenceVoiceEnrollmentSheet()
                 .environmentObject(viewModel)
         }
+        .onChange(of: viewModel.voiceConfigurations) {
+            viewModel.persistVoiceConfigurationStore()
+            viewModel.refreshVoiceOptions()
+        }
         .onAppear {
             guard !didApplyInitialPaneVisibility else { return }
             didApplyInitialPaneVisibility = true
             uiState.splitVisibility = viewModel.shouldHideSettingsPaneOnLaunch() ? .detailOnly : .all
+        }
+    }
+
+    @ViewBuilder
+    private var voiceConfigurationPane: some View {
+        if viewModel.isEditingReferenceVoiceConfiguration {
+            ReferenceVoicePaneSummary(closeAction: viewModel.closeVoiceConfigurationPane)
+                .environmentObject(viewModel)
+        } else if let index = viewModel.activeVoiceConfigurationIndex {
+            VoiceConfigurationPane(
+                configuration: $viewModel.voiceConfigurations[index],
+                baseVoiceOptions: viewModel.baseVoiceOptions,
+                promptPreview: viewModel.voiceConfigurations[index].promptText,
+                onDuplicate: viewModel.duplicateSelectedVoiceConfiguration,
+                onClose: viewModel.closeVoiceConfigurationPane,
+                onChanged: viewModel.persistVoiceConfigurationStore
+            )
+        } else {
+            EmptyView()
         }
     }
 
@@ -318,6 +365,10 @@ struct ReferenceVoiceEnrollmentSheet: View {
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
 
+            Text("Target a clean sample of about 8 to 12 seconds. Keep the read natural and avoid long pauses.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
             VStack(alignment: .leading, spacing: 6) {
                 Text(viewModel.isPreferredReferenceVoiceModelSelected ? "Reference model: VoiceDesign selected" : "Reference model: switching to VoiceDesign")
                     .font(.caption)
@@ -369,7 +420,7 @@ struct ReferenceVoiceEnrollmentSheet: View {
 
             TextEditor(text: $viewModel.referenceVoiceScript)
                 .font(.body)
-                .frame(minHeight: 220)
+                .frame(minHeight: 160)
                 .padding(6)
                 .background(Color(NSColor.textBackgroundColor))
                 .cornerRadius(6)
@@ -414,6 +465,8 @@ struct ParagraphRow: View {
     var onRephrase: () -> Void
     var onDuplicate: () -> Void
     var onRemove: () -> Void
+    var onConfigureVoice: () -> Void
+    var onVoiceSelectionChanged: (String) -> Void
 
     private var textEditorPanel: some View {
         TextEditor(text: $paragraph.text)
@@ -473,21 +526,29 @@ struct ParagraphRow: View {
                 }
             }
             .labelsHidden()
+            .onChange(of: paragraph.voiceID) {
+                onVoiceSelectionChanged(paragraph.voiceID)
+            }
 
-            Text("Voice instructions")
+            Text("Voice profile")
                 .font(.caption)
                 .foregroundStyle(.secondary)
-            TextEditor(text: $paragraph.voiceInstructions)
-                .font(.caption)
-                .frame(minHeight: 96, alignment: .topLeading)
-                .padding(4)
-                .background(Color(NSColor.textBackgroundColor))
-                .cornerRadius(5)
-                .overlay(
-                    RoundedRectangle(cornerRadius: 5)
-                        .stroke(Color.gray.opacity(0.2), lineWidth: 1)
-                )
-                .help("Optional Qwen speaking instructions, for example emotion, pacing, tone, or style cues.")
+            Text(viewModel.voiceSummary(for: paragraph.voiceID))
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            Button(action: onConfigureVoice) {
+                Label(paragraph.voiceID == ReferenceVoiceProfile.voiceID ? "Reference Voice Details" : "Configure Voice", systemImage: "slider.horizontal.3")
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+
+            Text(viewModel.voicePromptPreview(for: paragraph.voiceID))
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .lineLimit(4)
+                .fixedSize(horizontal: false, vertical: true)
 
             Divider().padding(.vertical, 2)
 
@@ -609,5 +670,129 @@ struct ParagraphRow: View {
         .background(Color(NSColor.windowBackgroundColor))
         .cornerRadius(8)
         .shadow(color: Color.black.opacity(0.05), radius: 2, x: 0, y: 1)
+    }
+}
+
+struct VoiceConfigurationPane: View {
+    @Binding var configuration: VoiceConfiguration
+    var baseVoiceOptions: [VoiceOption]
+    var promptPreview: String
+    var onDuplicate: () -> Void
+    var onClose: () -> Void
+    var onChanged: () -> Void
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 14) {
+                HStack {
+                    Text("Voice Details")
+                        .font(.title3)
+                        .fontWeight(.bold)
+                    Spacer()
+                    Button(action: onClose) {
+                        Image(systemName: "xmark")
+                    }
+                    .buttonStyle(.plain)
+                }
+
+                Text("Tune the selected voice with structured acoustic controls instead of freeform prompt writing.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("Name")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    TextField("Voice Name", text: $configuration.name)
+                        .textFieldStyle(.roundedBorder)
+
+                    Text("Base Voice")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Picker("Base Voice", selection: $configuration.baseVoiceID) {
+                        ForEach(baseVoiceOptions) { option in
+                            Text(option.name).tag(option.id)
+                        }
+                    }
+                    .pickerStyle(.menu)
+
+                    pickerRow("Anchor", selection: $configuration.anchor)
+                    pickerRow("Timbre", selection: $configuration.timbre)
+                    pickerRow("Prosody", selection: $configuration.prosody)
+                    pickerRow("Pacing", selection: $configuration.pacing)
+                    pickerRow("Emotion", selection: $configuration.emotionalContour)
+                    pickerRow("Delivery", selection: $configuration.deliveryStrength)
+                }
+
+                Text("Prompt Preview")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Text(promptPreview)
+                    .font(.caption2)
+                    .padding(8)
+                    .background(Color(NSColor.controlBackgroundColor))
+                    .cornerRadius(6)
+
+                HStack {
+                    Button("Duplicate Voice", action: onDuplicate)
+                        .buttonStyle(.bordered)
+                    Spacer()
+                }
+            }
+            .padding(16)
+        }
+        .onChange(of: configuration) {
+            onChanged()
+        }
+    }
+
+    private func pickerRow<Value: CaseIterable & Hashable>(_ title: String, selection: Binding<Value>) -> some View where Value.AllCases: RandomAccessCollection, Value: CustomStringConvertible {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Picker(title, selection: selection) {
+                ForEach(Array(Value.allCases), id: \.self) { option in
+                    Text(option.description).tag(option)
+                }
+            }
+            .pickerStyle(.menu)
+        }
+    }
+}
+
+struct ReferenceVoicePaneSummary: View {
+    @EnvironmentObject private var viewModel: ProjectViewModel
+    var closeAction: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack {
+                Text("Reference Voice")
+                    .font(.title3)
+                    .fontWeight(.bold)
+                Spacer()
+                Button(action: closeAction) {
+                    Image(systemName: "xmark")
+                }
+                .buttonStyle(.plain)
+            }
+
+            Text("The reference voice uses the single enrolled sample stored by the app. Voice style comes primarily from the recording and transcript, not from the structured sliders.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            Text(viewModel.referenceVoiceEnrollmentStatus)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            Button(viewModel.referenceVoiceProfile == nil ? "Create Reference Voice" : "Manage Reference Voice") {
+                viewModel.openReferenceVoiceEnrollment()
+            }
+            .buttonStyle(.borderedProminent)
+
+            Spacer()
+        }
+        .padding(16)
     }
 }

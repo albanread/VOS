@@ -23,9 +23,7 @@ private struct UncheckedSendable<T>: @unchecked Sendable {
 @MainActor
 class ProjectViewModel: ObservableObject {
     static let defaultReferenceVoiceScript = """
-The old railway station always sounded larger in the evening, when footsteps echoed under the iron roof and every suitcase wheel rattled like a small drum. On Thursday, March fourteenth, twenty twenty-six, I arrived at 7:15 p.m. with a blue coat, a paper cup of coffee, and exactly twelve minutes to spare before the final boarding call. A child nearby counted softly to ten, then began again, as if repeating the numbers could slow time down.
-
-At first I felt calm, almost amused, but then a flicker of urgency moved through the crowd and changed the whole mood of the platform. Someone laughed, someone whispered a name, and the loudspeaker announced Gate B in a voice so bright it sounded unreal. I took one deep breath, straightened my notes, and reminded myself that a clear voice can carry confidence even when the heart is beating faster than it should.
+On Tuesday morning, Maya counted four blue lanterns near the station and said the air felt calm and clear. She smiled, took one slow breath, and asked Leo to bring the map before the train arrived.
 """
 
     @Published var paragraphs: [Paragraph] = []
@@ -43,6 +41,10 @@ At first I felt calm, almost amused, but then a flicker of urgency moved through
     @Published var isRecordingReferenceVoice = false
     @Published var referenceVoiceEnrollmentStatus: String = "No reference voice enrolled."
     @Published var isPreparingReferenceVoiceModel = false
+    @Published var voiceConfigurations: [VoiceConfiguration] = []
+    @Published var selectedVoiceConfigurationID: String?
+    @Published var isVoiceConfigurationPanePresented = false
+    @Published var voiceConfigurationEditingParagraphID: UUID?
     
     // Services
     private let ttsService = TTSService()
@@ -192,6 +194,10 @@ At first I felt calm, almost amused, but then a flicker of urgency moved through
         referenceVoiceDirectoryURL.appendingPathComponent("reference-voice.wav", isDirectory: false)
     }
 
+    private var voiceConfigurationStoreURL: URL {
+        rootModelsURL.appendingPathComponent("voice-configurations.json", isDirectory: false)
+    }
+
     var managedModelsRootDisplay: String {
         rootModelsURL.path
     }
@@ -203,10 +209,32 @@ At first I felt calm, almost amused, but then a flicker of urgency moved through
     func shouldHideSettingsPaneOnLaunch() -> Bool {
         requiredModelArtifactsPresent()
     }
+
+    var activeVoiceConfigurationIndex: Int? {
+        guard let selectedVoiceConfigurationID else { return nil }
+        return voiceConfigurations.firstIndex(where: { $0.id == selectedVoiceConfigurationID })
+    }
+
+    var isEditingReferenceVoiceConfiguration: Bool {
+        guard let voiceConfigurationEditingParagraphID,
+              let paragraph = paragraphs.first(where: { $0.id == voiceConfigurationEditingParagraphID })
+        else {
+            return false
+        }
+        return paragraph.voiceID == ReferenceVoiceProfile.voiceID
+    }
+
+    var baseVoiceOptions: [VoiceOption] {
+        VoiceConfiguration.builtInDefaults.map {
+            VoiceOption(id: $0.id, name: $0.name, prompt: $0.promptText)
+        }
+    }
     
     init() {
         prepareDefaultModelFoldersAndPaths()
+        loadVoiceConfigurationStore()
         loadReferenceVoiceProfile()
+        refreshVoiceOptions()
         if paragraphs.isEmpty {
             addParagraph()
         }
@@ -235,6 +263,113 @@ At first I felt calm, almost amused, but then a flicker of urgency moved through
         if let discoveredLLM = firstFile(in: llmModelsURL, matchingExtension: "gguf") {
             modelPathLLM = discoveredLLM.path
         }
+    }
+
+    func persistVoiceConfigurationStore() {
+        let store = VoiceConfigurationStore(
+            selectedVoiceConfigurationID: selectedVoiceConfigurationID,
+            configurations: voiceConfigurations
+        )
+
+        do {
+            let data = try JSONEncoder().encode(store)
+            try data.write(to: voiceConfigurationStoreURL, options: .atomic)
+        } catch {
+            debugLog("DEBUG:: [VM] Failed to persist voice configuration store: \(error.localizedDescription)")
+        }
+    }
+
+    private func loadVoiceConfigurationStore() {
+        guard let data = try? Data(contentsOf: voiceConfigurationStoreURL),
+              let store = try? JSONDecoder().decode(VoiceConfigurationStore.self, from: data),
+              !store.configurations.isEmpty
+        else {
+            voiceConfigurations = VoiceConfiguration.builtInDefaults
+            selectedVoiceConfigurationID = voiceConfigurations.first?.id
+            persistVoiceConfigurationStore()
+            return
+        }
+
+        voiceConfigurations = store.configurations
+        selectedVoiceConfigurationID = store.selectedVoiceConfigurationID ?? store.configurations.first?.id
+        if selectedVoiceConfigurationID == nil {
+            selectedVoiceConfigurationID = voiceConfigurations.first?.id
+        }
+    }
+
+    func openVoiceConfiguration(for paragraphID: UUID) {
+        guard let paragraph = paragraphs.first(where: { $0.id == paragraphID }) else { return }
+        voiceConfigurationEditingParagraphID = paragraphID
+        if paragraph.voiceID == ReferenceVoiceProfile.voiceID {
+            selectedVoiceConfigurationID = nil
+        } else {
+            selectedVoiceConfigurationID = resolvedVoiceConfiguration(for: paragraph.voiceID)?.id ?? voiceConfigurations.first?.id
+        }
+        isVoiceConfigurationPanePresented = true
+        persistVoiceConfigurationStore()
+    }
+
+    func closeVoiceConfigurationPane() {
+        isVoiceConfigurationPanePresented = false
+        persistVoiceConfigurationStore()
+    }
+
+    func handleVoiceSelectionChange(for paragraphID: UUID, voiceID: String) {
+        if let index = paragraphs.firstIndex(where: { $0.id == paragraphID }) {
+            paragraphs[index].voiceID = voiceID
+        }
+
+        if voiceConfigurationEditingParagraphID == paragraphID {
+            selectedVoiceConfigurationID = (voiceID == ReferenceVoiceProfile.voiceID) ? nil : voiceID
+        }
+        persistVoiceConfigurationStore()
+    }
+
+    func duplicateSelectedVoiceConfiguration() {
+        guard let activeVoiceConfigurationIndex else { return }
+        let duplicate = voiceConfigurations[activeVoiceConfigurationIndex].duplicated()
+        voiceConfigurations.append(duplicate)
+        selectedVoiceConfigurationID = duplicate.id
+
+        if let paragraphID = voiceConfigurationEditingParagraphID,
+           let paragraphIndex = paragraphs.firstIndex(where: { $0.id == paragraphID })
+        {
+            paragraphs[paragraphIndex].voiceID = duplicate.id
+        }
+
+        refreshVoiceOptions()
+        persistVoiceConfigurationStore()
+    }
+
+    func resolvedVoiceConfiguration(for voiceID: String) -> VoiceConfiguration? {
+        voiceConfigurations.first(where: { $0.id == voiceID })
+            ?? VoiceConfiguration.builtInDefault(for: voiceID)
+    }
+
+    func voiceSummary(for voiceID: String) -> String {
+        if voiceID == ReferenceVoiceProfile.voiceID {
+            return "Uses the enrolled reference recording and transcript."
+        }
+
+        return resolvedVoiceConfiguration(for: voiceID)?.summaryText
+            ?? "Select a saved voice configuration."
+    }
+
+    func voicePromptPreview(for voiceID: String) -> String {
+        if voiceID == ReferenceVoiceProfile.voiceID {
+            return "Reference Voice uses the enrolled sample plus transcript matching for stable cloning."
+        }
+
+        return resolvedVoiceConfiguration(for: voiceID)?.promptText
+            ?? "No structured voice prompt available."
+    }
+
+    private func defaultVoiceConfigurationID() -> String {
+        if let selectedVoiceConfigurationID,
+           voiceConfigurations.contains(where: { $0.id == selectedVoiceConfigurationID }) {
+            return selectedVoiceConfigurationID
+        }
+        return voiceConfigurations.first?.id ?? "narrator_clear"
     }
 
     private func firstFile(in folder: URL, matchingExtension ext: String) -> URL? {
@@ -380,7 +515,7 @@ At first I felt calm, almost amused, but then a flicker of urgency moved through
     }
     
     func addParagraph() {
-        var p = Paragraph(text: "New paragraph text here.", voiceID: voiceOptions.first?.id ?? "narrator_clear")
+        var p = Paragraph(text: "New paragraph text here.", voiceID: defaultVoiceConfigurationID())
         if p.outputFilename.isEmpty {
             p.outputFilename = "para_\(p.id.uuidString.prefix(8)).wav"
         }
@@ -415,7 +550,7 @@ At first I felt calm, almost amused, but then a flicker of urgency moved through
             referenceVoiceScript = Self.defaultReferenceVoiceScript
         }
         if referenceVoiceProfile == nil {
-            referenceVoiceEnrollmentStatus = "Record in a quiet room. Best results use the VoiceDesign Qwen model with 8-20 seconds of clean speech."
+            referenceVoiceEnrollmentStatus = "Record in a quiet room. Best results use the VoiceDesign Qwen model with about 8 to 12 seconds of clean speech."
         }
         Task {
             await prepareReferenceVoiceModelIfNeeded()
@@ -500,7 +635,7 @@ At first I felt calm, almost amused, but then a flicker of urgency moved through
             referenceVoiceEnrollmentStatus = "Using fallback script. Initialize the LLM for AI-generated reference text."
         } else {
             referenceVoiceScript = generated
-            referenceVoiceEnrollmentStatus = "Generated a fresh reference script."
+            referenceVoiceEnrollmentStatus = "Generated a short reference script for roughly 10 seconds of speech."
         }
     }
 
@@ -508,7 +643,7 @@ At first I felt calm, almost amused, but then a flicker of urgency moved through
         do {
             try await referenceVoiceRecorder.startRecording(to: referenceVoiceRecordingURL)
             isRecordingReferenceVoice = true
-            referenceVoiceEnrollmentStatus = "Recording… read both paragraphs in your natural voice."
+            referenceVoiceEnrollmentStatus = "Recording… read the short script once in your natural voice. Aim for about 10 seconds."
         } catch {
             referenceVoiceEnrollmentStatus = error.localizedDescription
             statusMessage = error.localizedDescription
@@ -518,7 +653,7 @@ At first I felt calm, almost amused, but then a flicker of urgency moved through
     func stopReferenceVoiceRecording() {
         referenceVoiceRecorder.stopRecording()
         isRecordingReferenceVoice = false
-        referenceVoiceEnrollmentStatus = "Recording stopped. Save to trim silence and enroll this as Reference Voice."
+        referenceVoiceEnrollmentStatus = "Recording stopped. Save to trim silence and enroll this as your Reference Voice."
     }
 
     func saveReferenceVoiceProfile() {
@@ -789,7 +924,7 @@ At first I felt calm, almost amused, but then a flicker of urgency moved through
         
         let text = paragraphs[index].text
         let voiceID = paragraphs[index].voiceID
-        let voiceInstructions = paragraphs[index].voiceInstructions.trimmingCharacters(in: .whitespacesAndNewlines)
+        let voiceConfiguration = resolvedVoiceConfiguration(for: voiceID)
         let referenceVoice = (voiceID == ReferenceVoiceProfile.voiceID) ? referenceVoiceProfile : nil
         let trimmedRepo = ttsModelRepo.trimmingCharacters(in: .whitespacesAndNewlines)
         let pickerLabel = voiceOptions.first(where: { $0.id == voiceID })?.name ?? "(voice not found in presets)"
@@ -798,7 +933,7 @@ At first I felt calm, almost amused, but then a flicker of urgency moved through
         debugLog("DEBUG:: [VM]   voice ID             : \(voiceID)")
         debugLog("DEBUG:: [VM]   picker label         : \(pickerLabel)")
         debugLog("DEBUG:: [VM]   voiceOptions count    : \(voiceOptions.count)")
-        debugLog("DEBUG:: [VM]   voice instructions    : \(voiceInstructions.prefix(80))")
+        debugLog("DEBUG:: [VM]   voice prompt summary  : \(voiceConfiguration?.summaryText ?? "reference voice")")
         debugLog("DEBUG:: [VM]   text (first 80)       : \(text.prefix(80))")
         let speed = paragraphs[index].speed.rate
         let pitchSemitones = paragraphs[index].pitch.semitones
@@ -842,7 +977,7 @@ At first I felt calm, almost amused, but then a flicker of urgency moved through
             text: text,
             outputFile: outputPath,
             voiceID: voiceID,
-            voiceInstructions: voiceInstructions,
+            voiceConfiguration: voiceConfiguration,
             referenceVoiceProfile: referenceVoice,
             speed: speed,
             pitchSemitones: pitchSemitones
@@ -894,6 +1029,7 @@ At first I felt calm, almost amused, but then a flicker of urgency moved through
                     }
                     return p
                 }
+                remapParagraphVoicesIfNeeded()
                 statusMessage = "Transcript loaded (\(loaded.count) paragraphs)."
             } catch {
                 statusMessage = "Load failed: \(error.localizedDescription)"
@@ -1086,9 +1222,10 @@ At first I felt calm, almost amused, but then a flicker of urgency moved through
     }
 
     private func remapParagraphVoicesIfNeeded() {
-        guard let defaultVoiceID = voiceOptions.first?.id else { return }
+        let validVoiceIDs = Set(voiceOptions.map(\ .id))
+        let defaultVoiceID = defaultVoiceConfigurationID()
         paragraphs = paragraphs.map { paragraph in
-            guard voiceOptions.contains(where: { $0.id == paragraph.voiceID }) else {
+            guard validVoiceIDs.contains(paragraph.voiceID) else {
                 var updated = paragraph
                 updated.voiceID = defaultVoiceID
                 return updated
@@ -1113,7 +1250,9 @@ At first I felt calm, almost amused, but then a flicker of urgency moved through
     }
 
     private func computedVoiceOptions() -> [VoiceOption] {
-        var options = ttsService.voiceOptionsList
+        var options = voiceConfigurations.map {
+            VoiceOption(id: $0.id, name: $0.name, prompt: $0.promptText)
+        }
         if referenceVoiceProfile != nil {
             options.append(
                 VoiceOption(
@@ -1126,7 +1265,7 @@ At first I felt calm, almost amused, but then a flicker of urgency moved through
         return options
     }
 
-    private func refreshVoiceOptions() {
+    func refreshVoiceOptions() {
         voiceOptions = computedVoiceOptions()
         remapParagraphVoicesIfNeeded()
     }

@@ -5,6 +5,8 @@ import MLXAudioCore
 @MainActor
 final class ReferenceVoiceRecorder: NSObject {
     private var recorder: AVAudioRecorder?
+    private static let minimumPreferredDuration: Double = 6.0
+    private static let maximumPreferredDuration: Double = 15.0
 
     struct RecordingSummary {
         let durationSeconds: Double
@@ -61,6 +63,14 @@ final class ReferenceVoiceRecorder: NSObject {
         let minimumFrames = max(resolvedSampleRate * 2, 16_000)
         guard trimmedSamples.count >= minimumFrames else {
             throw RecorderError.recordingTooShort
+        }
+
+        let durationSeconds = Double(trimmedSamples.count) / Double(resolvedSampleRate)
+        guard durationSeconds >= Self.minimumPreferredDuration else {
+            throw RecorderError.recordingTooShort
+        }
+        guard durationSeconds <= Self.maximumPreferredDuration else {
+            throw RecorderError.recordingTooLong
         }
 
         let normalizedSamples = Self.normalize(trimmedSamples)
@@ -122,6 +132,7 @@ final class ReferenceVoiceRecorder: NSObject {
         case microphonePermissionDenied
         case failedToStartRecording
         case recordingTooShort
+        case recordingTooLong
         case recordingTooQuiet
 
         var errorDescription: String? {
@@ -131,7 +142,9 @@ final class ReferenceVoiceRecorder: NSObject {
             case .failedToStartRecording:
                 return "Failed to start microphone recording."
             case .recordingTooShort:
-                return "Reference recording is too short. Please record at least a few seconds of natural speech."
+                return "Reference recording is too short. Aim for about 8 to 12 seconds of natural speech."
+            case .recordingTooLong:
+                return "Reference recording is too long. Keep the cleaned sample under about 15 seconds."
             case .recordingTooQuiet:
                 return "Reference recording was too quiet or mostly silence. Please try again closer to the microphone."
             }

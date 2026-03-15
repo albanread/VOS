@@ -114,7 +114,7 @@ class TTSService: ObservableObject {
         text: String,
         outputFile: String,
         voiceID: String,
-        voiceInstructions: String = "",
+        voiceConfiguration: VoiceConfiguration? = nil,
         referenceVoiceProfile: ReferenceVoiceProfile? = nil,
         speed: Float = 1.0,
         pitchSemitones: Float = 0.0,
@@ -129,15 +129,14 @@ class TTSService: ObservableObject {
         debugLog("DEBUG:: [TTS] generateAudio called")
         debugLog("DEBUG:: [TTS]   voice ID              : \(voiceID)")
         debugLog("DEBUG:: [TTS]   text (first 80)       : \(text.prefix(80))")
-        debugLog("DEBUG:: [TTS]   instructions (first 80): \(voiceInstructions.prefix(80))")
+        debugLog("DEBUG:: [TTS]   prompt summary        : \(voiceConfiguration?.summaryText ?? "reference voice")")
         debugLog("DEBUG:: [TTS]   outputFile            : \(outputFile)")
 
         let modelBox = UncheckedSendableModel(value: loadedModel)
         let usesReferenceVoice = voiceID == ReferenceVoiceProfile.voiceID
-        let baseVoicePrompt = speakerOptions.first(where: { $0.id == voiceID })?.prompt
         let voicePrompt = usesReferenceVoice
-            ? Self.composeReferenceVoicePrompt(instructions: voiceInstructions)
-            : Self.composeVoicePrompt(basePrompt: baseVoicePrompt, instructions: voiceInstructions)
+            ? Self.composeReferenceVoicePrompt()
+            : Self.composeVoicePrompt(configuration: voiceConfiguration ?? VoiceConfiguration.builtInDefault(for: voiceID))
         let referenceVoiceURL = referenceVoiceProfile.map { URL(fileURLWithPath: $0.audioPath) }
         let referenceTranscript = referenceVoiceProfile?.transcript
         let clampedSpeed = max(0.5, min(speed, 2.0))
@@ -226,68 +225,16 @@ class TTSService: ObservableObject {
         hubCache.cacheDirectory.path
     }
 
-    private static let defaultVoiceOptions: [VoiceOption] = [
-        VoiceOption(
-            id: "narrator_clear",
-            name: "Narrator Male Clear",
-            prompt: "Single consistent speaker. Adult male narrator. Clear mid-low voice, steady pacing, clean diction, professional delivery. Do not switch gender, timbre, or accent during the utterance."
-        ),
-        VoiceOption(
-            id: "narrator_warm",
-            name: "Narrator Female Warm",
-            prompt: "Single consistent speaker. Adult female narrator. Warm, confident, natural expression with smooth pacing. Do not switch gender, timbre, or accent during the utterance."
-        ),
-        VoiceOption(
-            id: "character_bright",
-            name: "Character Bright Female",
-            prompt: "Single consistent speaker. Bright expressive female character voice with crisp diction and lively energy. Do not switch gender, timbre, or accent during the utterance."
-        ),
-        VoiceOption(
-            id: "character_deep",
-            name: "Character Deep Male",
-            prompt: "Single consistent speaker. Deep expressive male character voice with dramatic tone and stable resonance. Do not switch gender, timbre, or accent during the utterance."
-        ),
-        VoiceOption(
-            id: "documentary",
-            name: "Documentary Male",
-            prompt: "Single consistent speaker. Adult male documentary narrator with polished articulation, restrained gravitas, and measured pacing. Do not switch gender, timbre, or accent during the utterance."
-        ),
-    ]
-
-    private static func composeVoicePrompt(basePrompt: String?, instructions: String) -> String? {
-        let trimmedBasePrompt = basePrompt?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        let trimmedInstructions = instructions.trimmingCharacters(in: .whitespacesAndNewlines)
-
-        switch (trimmedBasePrompt.isEmpty, trimmedInstructions.isEmpty) {
-        case (true, true):
-            return nil
-        case (false, true):
-            return trimmedBasePrompt
-        case (true, false):
-            return trimmedInstructions
-        case (false, false):
-            return """
-            Voice identity requirements:
-            \(trimmedBasePrompt)
-
-            Additional speaking instructions:
-            \(trimmedInstructions)
-
-            Hard constraints:
-            - Keep one speaker identity for the entire utterance.
-            - Preserve the selected speaker gender and vocal character.
-            - Apply style instructions without changing speaker identity.
-            """
-        }
+    private static let defaultVoiceOptions: [VoiceOption] = VoiceConfiguration.builtInDefaults.map {
+        VoiceOption(id: $0.id, name: $0.name, prompt: $0.promptText)
     }
 
-    private static func composeReferenceVoicePrompt(instructions: String) -> String? {
-        let trimmedInstructions = instructions.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmedInstructions.isEmpty else {
-            return nil
-        }
+    private static func composeVoicePrompt(configuration: VoiceConfiguration?) -> String? {
+        configuration?.promptText
+    }
 
-        return trimmedInstructions
+    private static func composeReferenceVoicePrompt() -> String? {
+        "Match the enrolled reference speaker faithfully with stable pacing, clear articulation, and minimal drift from the source identity."
     }
 
     nonisolated private static func applyReferenceVoiceMakeupGainIfNeeded(_ samples: [Float]) -> [Float] {

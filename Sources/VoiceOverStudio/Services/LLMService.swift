@@ -168,15 +168,16 @@ CRITICAL CONSTRAINTS:
         let systemPrompt = """
 You create short recording scripts for voice-cloning or speaker-reference enrollment.
 
-Write exactly two paragraphs for an adult speaker to read aloud into a microphone.
+Write exactly one short paragraph for an adult speaker to read aloud into a microphone.
 
 Requirements:
-- Total length: roughly 120 to 180 words.
+- Total length: roughly 25 to 40 words.
 - Plain English prose only.
-- Include a mix of calm narration, one or two emotional turns, numbers, dates, names, and varied sentence lengths.
+- Include a mix of natural vowels and consonants, plus one number, date, or name.
 - Make it sound natural to read aloud.
 - Do not use bullet points, labels, stage directions, markdown, or commentary.
-- Output only the two paragraphs.
+- Target a spoken duration of about 8 to 12 seconds.
+- Output only the paragraph.
 """
 
         return await runInference(inputText: "Create a reference-voice recording script.", systemPrompt: systemPrompt)
