@@ -11,6 +11,7 @@ CONTENTS_DIR="$APP_BUNDLE/Contents"
 MACOS_DIR="$CONTENTS_DIR/MacOS"
 RESOURCES_DIR="$CONTENTS_DIR/Resources"
 INFO_PLIST_SOURCE="$REPO_ROOT/Packaging/VoiceOverStudio-Info.plist"
+ICON_SOURCE="$REPO_ROOT/Packaging/VoiceOverStudio.icns"
 
 if [[ ! -f "$INFO_PLIST_SOURCE" ]]; then
   echo "Missing Info.plist template at $INFO_PLIST_SOURCE" >&2
@@ -47,6 +48,10 @@ cp -R "$RESOURCE_BUNDLE" "$RESOURCES_DIR/${APP_NAME}_${APP_NAME}.bundle"
 
 if [[ -f "$BIN_PATH/default.metallib" ]]; then
   cp "$BIN_PATH/default.metallib" "$RESOURCES_DIR/default.metallib"
+fi
+
+if [[ -f "$ICON_SOURCE" ]]; then
+  cp "$ICON_SOURCE" "$RESOURCES_DIR/VoiceOverStudio.icns"
 fi
 
 if command -v codesign >/dev/null 2>&1; then

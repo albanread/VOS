@@ -195,12 +195,14 @@ struct ContentView: View {
 
                     HStack {
                         Text("Computer Tier")
-                        Picker("Computer Tier", selection: $viewModel.modelComputeTierRaw) {
+                        Picker("", selection: $viewModel.modelComputeTierRaw) {
                             ForEach(ProjectViewModel.ComputeTier.allCases) { tier in
                                 Text(tier.title).tag(tier.rawValue)
                             }
                         }
                         .pickerStyle(.menu)
+                        .labelsHidden()
+                        .accessibilityLabel("Computer Tier")
                         Button("Auto-detect This Mac") {
                             viewModel.autoDetectModelTier()
                         }
@@ -605,28 +607,20 @@ struct ParagraphRow: View {
     
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            GeometryReader { geometry in
-                let useVerticalLayout = geometry.size.width < 820
-
-                Group {
-                    if useVerticalLayout {
-                        VStack(alignment: .leading, spacing: 12) {
-                            textEditorPanel
-                            controlsPanel
-                        }
-                    } else {
-                        HStack(alignment: .top, spacing: 12) {
-                            textEditorPanel
-                                .frame(minWidth: 320, maxWidth: .infinity)
-                            controlsPanel
-                                .frame(width: 240, alignment: .topLeading)
-                        }
-                    }
+            ViewThatFits(in: .horizontal) {
+                HStack(alignment: .top, spacing: 12) {
+                    textEditorPanel
+                        .frame(minWidth: 320, maxWidth: .infinity)
+                    controlsPanel
+                        .frame(width: 240, alignment: .topLeading)
                 }
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+
+                VStack(alignment: .leading, spacing: 12) {
+                    textEditorPanel
+                    controlsPanel
+                }
             }
-            .frame(height: 380)
-            .frame(minHeight: 460)
+            .frame(maxWidth: .infinity, alignment: .leading)
             
             HStack {
                 Button(action: onGenerate) {
