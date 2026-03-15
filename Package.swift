@@ -16,7 +16,7 @@ let llamaLibrarySearchPaths = [
 let package = Package(
     name: "VoiceOverStudio",
     platforms: [
-        .macOS(.v14)
+        .macOS("15.0")
     ],
     products: [
         .executable(

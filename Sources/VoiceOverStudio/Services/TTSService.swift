@@ -16,6 +16,12 @@ private struct UncheckedSendableModel: @unchecked Sendable {
 @MainActor
 class TTSService: ObservableObject {
     static let defaultModelRepo = "mlx-community/Qwen3-TTS-12Hz-0.6B-Base-8bit"
+    static let preferredReferenceVoiceModelRepo = "mlx-community/Qwen3-TTS-12Hz-1.7B-VoiceDesign-8bit"
+    nonisolated private static let consistentVoiceTemperature: Float = 0.25
+    nonisolated private static let consistentVoiceTopP: Float = 0.75
+    nonisolated private static let referenceVoiceMinimumPeak: Float = 0.12
+    nonisolated private static let referenceVoiceTargetPeak: Float = 0.72
+    nonisolated private static let referenceVoiceMaxGain: Float = 24.0
     nonisolated static let cacheDirectory = FileManager.default.homeDirectoryForCurrentUser
         .appendingPathComponent("Library/vos2026/huggingface-hub", isDirectory: true)
 
@@ -34,6 +40,10 @@ class TTSService: ObservableObject {
         model = nil
         loadedModelRepo = nil
         speakerOptions.removeAll()
+    }
+
+    static func prefersVoiceDesignForReferenceVoice(modelRepo: String) -> Bool {
+        modelRepo.localizedCaseInsensitiveContains("voicedesign")
     }
 
     func isModelCached(modelRepo: String, revision: String = "main") -> Bool {
@@ -104,6 +114,8 @@ class TTSService: ObservableObject {
         text: String,
         outputFile: String,
         voiceID: String,
+        voiceInstructions: String = "",
+        referenceVoiceProfile: ReferenceVoiceProfile? = nil,
         speed: Float = 1.0,
         pitchSemitones: Float = 0.0,
         callback _: ((Float) -> Void)? = nil
@@ -117,10 +129,17 @@ class TTSService: ObservableObject {
         debugLog("DEBUG:: [TTS] generateAudio called")
         debugLog("DEBUG:: [TTS]   voice ID              : \(voiceID)")
         debugLog("DEBUG:: [TTS]   text (first 80)       : \(text.prefix(80))")
+        debugLog("DEBUG:: [TTS]   instructions (first 80): \(voiceInstructions.prefix(80))")
         debugLog("DEBUG:: [TTS]   outputFile            : \(outputFile)")
 
         let modelBox = UncheckedSendableModel(value: loadedModel)
-        let voicePrompt = speakerOptions.first(where: { $0.id == voiceID })?.prompt
+        let usesReferenceVoice = voiceID == ReferenceVoiceProfile.voiceID
+        let baseVoicePrompt = speakerOptions.first(where: { $0.id == voiceID })?.prompt
+        let voicePrompt = usesReferenceVoice
+            ? Self.composeReferenceVoicePrompt(instructions: voiceInstructions)
+            : Self.composeVoicePrompt(basePrompt: baseVoicePrompt, instructions: voiceInstructions)
+        let referenceVoiceURL = referenceVoiceProfile.map { URL(fileURLWithPath: $0.audioPath) }
+        let referenceTranscript = referenceVoiceProfile?.transcript
         let clampedSpeed = max(0.5, min(speed, 2.0))
 
         let result = await Task.detached(priority: .userInitiated) { () -> Bool in
@@ -129,17 +148,34 @@ class TTSService: ObservableObject {
                 if let maxTokens = parameters.maxTokens {
                     parameters.maxTokens = max(maxTokens, 1024)
                 }
+                if usesReferenceVoice {
+                    parameters.repetitionPenalty = parameters.repetitionPenalty ?? 1.05
+                } else {
+                    parameters.temperature = Self.consistentVoiceTemperature
+                    parameters.topP = Self.consistentVoiceTopP
+                    parameters.repetitionPenalty = max(parameters.repetitionPenalty ?? 1.05, 1.1)
+                }
+
+                let refAudio: MLXArray?
+                if let referenceVoiceURL {
+                    (_, refAudio) = try loadAudioArray(from: referenceVoiceURL, sampleRate: modelBox.value.sampleRate)
+                } else {
+                    refAudio = nil
+                }
 
                 let audio = try await modelBox.value.generate(
                     text: text,
                     voice: voicePrompt,
-                    refAudio: nil,
-                    refText: nil,
-                    language: "English",
+                    refAudio: refAudio,
+                    refText: referenceTranscript,
+                    language: usesReferenceVoice ? nil : "English",
                     generationParameters: parameters
                 )
 
-                let samples = audio.squeezed().asArray(Float.self)
+                let rawSamples = audio.squeezed().asArray(Float.self)
+                let samples = usesReferenceVoice
+                    ? Self.applyReferenceVoiceMakeupGainIfNeeded(rawSamples)
+                    : rawSamples
                 guard !samples.isEmpty else {
                     debugLog("DEBUG:: [TTS] Empty audio generated")
                     return false
@@ -191,10 +227,84 @@ class TTSService: ObservableObject {
     }
 
     private static let defaultVoiceOptions: [VoiceOption] = [
-        VoiceOption(id: "narrator_clear", name: "Narrator Clear", prompt: "A calm professional narrator with a neutral English voice."),
-        VoiceOption(id: "narrator_warm", name: "Narrator Warm", prompt: "A warm female narrator with confident pacing and natural expression."),
-        VoiceOption(id: "character_bright", name: "Character Bright", prompt: "A bright energetic young character voice with crisp diction."),
-        VoiceOption(id: "character_deep", name: "Character Deep", prompt: "A deep expressive male character voice with dramatic tone."),
-        VoiceOption(id: "documentary", name: "Documentary", prompt: "A measured documentary voice with polished articulation and subtle gravitas."),
+        VoiceOption(
+            id: "narrator_clear",
+            name: "Narrator Male Clear",
+            prompt: "Single consistent speaker. Adult male narrator. Clear mid-low voice, steady pacing, clean diction, professional delivery. Do not switch gender, timbre, or accent during the utterance."
+        ),
+        VoiceOption(
+            id: "narrator_warm",
+            name: "Narrator Female Warm",
+            prompt: "Single consistent speaker. Adult female narrator. Warm, confident, natural expression with smooth pacing. Do not switch gender, timbre, or accent during the utterance."
+        ),
+        VoiceOption(
+            id: "character_bright",
+            name: "Character Bright Female",
+            prompt: "Single consistent speaker. Bright expressive female character voice with crisp diction and lively energy. Do not switch gender, timbre, or accent during the utterance."
+        ),
+        VoiceOption(
+            id: "character_deep",
+            name: "Character Deep Male",
+            prompt: "Single consistent speaker. Deep expressive male character voice with dramatic tone and stable resonance. Do not switch gender, timbre, or accent during the utterance."
+        ),
+        VoiceOption(
+            id: "documentary",
+            name: "Documentary Male",
+            prompt: "Single consistent speaker. Adult male documentary narrator with polished articulation, restrained gravitas, and measured pacing. Do not switch gender, timbre, or accent during the utterance."
+        ),
     ]
+
+    private static func composeVoicePrompt(basePrompt: String?, instructions: String) -> String? {
+        let trimmedBasePrompt = basePrompt?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let trimmedInstructions = instructions.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        switch (trimmedBasePrompt.isEmpty, trimmedInstructions.isEmpty) {
+        case (true, true):
+            return nil
+        case (false, true):
+            return trimmedBasePrompt
+        case (true, false):
+            return trimmedInstructions
+        case (false, false):
+            return """
+            Voice identity requirements:
+            \(trimmedBasePrompt)
+
+            Additional speaking instructions:
+            \(trimmedInstructions)
+
+            Hard constraints:
+            - Keep one speaker identity for the entire utterance.
+            - Preserve the selected speaker gender and vocal character.
+            - Apply style instructions without changing speaker identity.
+            """
+        }
+    }
+
+    private static func composeReferenceVoicePrompt(instructions: String) -> String? {
+        let trimmedInstructions = instructions.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedInstructions.isEmpty else {
+            return nil
+        }
+
+        return trimmedInstructions
+    }
+
+    nonisolated private static func applyReferenceVoiceMakeupGainIfNeeded(_ samples: [Float]) -> [Float] {
+        guard !samples.isEmpty else { return samples }
+
+        let peak = samples.reduce(Float.zero) { currentMax, sample in
+            max(currentMax, abs(sample))
+        }
+
+        guard peak > 0.0001, peak < referenceVoiceMinimumPeak else {
+            return samples
+        }
+
+        let gain = min(referenceVoiceTargetPeak / peak, referenceVoiceMaxGain)
+        return samples.map { sample in
+            let scaled = sample * gain
+            return max(-0.98, min(0.98, scaled))
+        }
+    }
 }

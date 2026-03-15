@@ -22,7 +22,7 @@ VoiceOverStudio is already a native macOS app built with SwiftUI and local llama
 
 Based on current upstream documentation for `mlx-audio-swift`:
 
-- platform: macOS 14+, Apple Silicon recommended
+- platform: macOS 15+, Apple Silicon required for the Metal 3.2 MLX path
 - toolchain: Xcode 15+, Swift 5.9+
 - integration: Swift Package Manager
 - API style: native async/await

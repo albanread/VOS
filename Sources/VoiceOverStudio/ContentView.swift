@@ -108,6 +108,10 @@ struct ContentView: View {
         }
         .navigationSplitViewStyle(.balanced)
         .frame(minWidth: 900, minHeight: 620)
+        .sheet(isPresented: $viewModel.isReferenceVoiceSheetPresented) {
+            ReferenceVoiceEnrollmentSheet()
+                .environmentObject(viewModel)
+        }
         .onAppear {
             guard !didApplyInitialPaneVisibility else { return }
             didApplyInitialPaneVisibility = true
@@ -232,6 +236,28 @@ struct ContentView: View {
                         .padding(.top, 5)
                     }
                     .padding(.top, 10)
+
+                    Divider().padding(.vertical, 4)
+
+                    Text("Reference Voice")
+                        .font(.subheadline)
+
+                    Text(viewModel.referenceVoiceProfile == nil ? "Enroll a microphone recording to create a stable speaker identity for Qwen." : "Reference Voice enrolled and available in the paragraph voice picker.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+
+                    Text("Best results come from a VoiceDesign Qwen model and a clean, quiet microphone recording.")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+
+                    Text(viewModel.referenceVoiceEnrollmentStatus)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+
+                    Button(viewModel.referenceVoiceProfile == nil ? "Create Reference Voice" : "Manage Reference Voice") {
+                        viewModel.openReferenceVoiceEnrollment()
+                    }
+                    .buttonStyle(.bordered)
                 }
 
                 Spacer(minLength: 8)
@@ -276,6 +302,103 @@ struct ContentView: View {
             .padding()
         }
         .background(Color(NSColor.controlBackgroundColor))
+    }
+}
+
+struct ReferenceVoiceEnrollmentSheet: View {
+    @EnvironmentObject private var viewModel: ProjectViewModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Reference Voice")
+                .font(.title2)
+                .fontWeight(.bold)
+
+            Text("Generate a short script, read it into your Mac microphone, and save the recording as a reusable speaker profile. The app trims silence and works best with a VoiceDesign Qwen model.")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text(viewModel.isPreferredReferenceVoiceModelSelected ? "Reference model: VoiceDesign selected" : "Reference model: switching to VoiceDesign")
+                    .font(.caption)
+                    .fontWeight(.semibold)
+
+                Text(viewModel.isPreferredReferenceVoiceModelCached ? "The VoiceDesign model is cached locally." : "The VoiceDesign model is required for Reference Voice and will be downloaded here.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+
+                HStack(spacing: 10) {
+                    Button(viewModel.isPreferredReferenceVoiceModelCached ? "Load VoiceDesign Model" : "Download VoiceDesign Model") {
+                        Task { await viewModel.prepareReferenceVoiceModelIfNeeded(forceDownload: false) }
+                    }
+                    .disabled(viewModel.isPreparingReferenceVoiceModel || viewModel.isUpdatingModels)
+
+                    if viewModel.isPreparingReferenceVoiceModel || viewModel.isUpdatingModels {
+                        ProgressView(value: viewModel.modelUpdateProgress)
+                            .frame(width: 160)
+                        Text(viewModel.modelUpdateNarrative)
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+
+            HStack(spacing: 10) {
+                Button("Generate Script with AI") {
+                    Task { await viewModel.generateReferenceVoiceScript() }
+                }
+                .disabled(viewModel.isGeneratingReferenceVoiceScript || viewModel.isRecordingReferenceVoice)
+
+                Button("Use Default Script") {
+                    viewModel.referenceVoiceScript = ProjectViewModel.defaultReferenceVoiceScript
+                }
+                .disabled(viewModel.isRecordingReferenceVoice)
+
+                if viewModel.isRecordingReferenceVoice {
+                    Button("Stop Recording") {
+                        viewModel.stopReferenceVoiceRecording()
+                    }
+                    .buttonStyle(.borderedProminent)
+                } else {
+                    Button("Start Recording") {
+                        Task { await viewModel.startReferenceVoiceRecording() }
+                    }
+                    .buttonStyle(.borderedProminent)
+                }
+            }
+
+            TextEditor(text: $viewModel.referenceVoiceScript)
+                .font(.body)
+                .frame(minHeight: 220)
+                .padding(6)
+                .background(Color(NSColor.textBackgroundColor))
+                .cornerRadius(6)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 6)
+                        .stroke(Color.gray.opacity(0.2), lineWidth: 1)
+                )
+
+            Text(viewModel.referenceVoiceEnrollmentStatus)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            HStack {
+                Button("Save Reference Voice") {
+                    viewModel.saveReferenceVoiceProfile()
+                }
+                .disabled(viewModel.isRecordingReferenceVoice)
+
+                if viewModel.referenceVoiceProfile != nil {
+                    Button("Delete Reference Voice") {
+                        viewModel.deleteReferenceVoiceProfile()
+                    }
+                }
+
+                Spacer()
+            }
+        }
+        .padding(18)
+        .frame(minWidth: 720, minHeight: 520)
     }
 }
 
@@ -350,6 +473,21 @@ struct ParagraphRow: View {
                 }
             }
             .labelsHidden()
+
+            Text("Voice instructions")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            TextEditor(text: $paragraph.voiceInstructions)
+                .font(.caption)
+                .frame(minHeight: 96, alignment: .topLeading)
+                .padding(4)
+                .background(Color(NSColor.textBackgroundColor))
+                .cornerRadius(5)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 5)
+                        .stroke(Color.gray.opacity(0.2), lineWidth: 1)
+                )
+                .help("Optional Qwen speaking instructions, for example emotion, pacing, tone, or style cues.")
 
             Divider().padding(.vertical, 2)
 
@@ -427,6 +565,7 @@ struct ParagraphRow: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             }
             .frame(height: 380)
+            .frame(minHeight: 460)
             
             HStack {
                 Button(action: onGenerate) {

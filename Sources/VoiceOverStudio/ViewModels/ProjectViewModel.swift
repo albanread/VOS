@@ -22,6 +22,12 @@ private struct UncheckedSendable<T>: @unchecked Sendable {
 
 @MainActor
 class ProjectViewModel: ObservableObject {
+    static let defaultReferenceVoiceScript = """
+The old railway station always sounded larger in the evening, when footsteps echoed under the iron roof and every suitcase wheel rattled like a small drum. On Thursday, March fourteenth, twenty twenty-six, I arrived at 7:15 p.m. with a blue coat, a paper cup of coffee, and exactly twelve minutes to spare before the final boarding call. A child nearby counted softly to ten, then began again, as if repeating the numbers could slow time down.
+
+At first I felt calm, almost amused, but then a flicker of urgency moved through the crowd and changed the whole mood of the platform. Someone laughed, someone whispered a name, and the loudspeaker announced Gate B in a voice so bright it sounded unreal. I took one deep breath, straightened my notes, and reminded myself that a clear voice can carry confidence even when the heart is beating faster than it should.
+"""
+
     @Published var paragraphs: [Paragraph] = []
     @Published var isProcessing = false
     @Published var statusMessage = "Ready. Configure or download local models in Settings."
@@ -30,11 +36,19 @@ class ProjectViewModel: ObservableObject {
     @Published var isUpdatingModels = false
     @Published var modelUpdateProgress: Double = 0.0
     @Published var modelUpdateNarrative: String = "Idle"
+    @Published var referenceVoiceProfile: ReferenceVoiceProfile?
+    @Published var isReferenceVoiceSheetPresented = false
+    @Published var referenceVoiceScript: String = ProjectViewModel.defaultReferenceVoiceScript
+    @Published var isGeneratingReferenceVoiceScript = false
+    @Published var isRecordingReferenceVoice = false
+    @Published var referenceVoiceEnrollmentStatus: String = "No reference voice enrolled."
+    @Published var isPreparingReferenceVoiceModel = false
     
     // Services
     private let ttsService = TTSService()
     private let llmService = LLMService()
     private let modelUpdater = ModelUpdaterService()
+    private let referenceVoiceRecorder = ReferenceVoiceRecorder()
 
     private let llmDefaultFilename = "Llama-3.2-1B-Instruct-Q4_K_M.gguf"
     
@@ -166,6 +180,18 @@ class ProjectViewModel: ObservableObject {
         FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Documents", isDirectory: true)
     }
 
+    private var referenceVoiceDirectoryURL: URL {
+        rootModelsURL.appendingPathComponent("reference-voice", isDirectory: true)
+    }
+
+    private var referenceVoiceProfileURL: URL {
+        referenceVoiceDirectoryURL.appendingPathComponent("profile.json", isDirectory: false)
+    }
+
+    private var referenceVoiceRecordingURL: URL {
+        referenceVoiceDirectoryURL.appendingPathComponent("reference-voice.wav", isDirectory: false)
+    }
+
     var managedModelsRootDisplay: String {
         rootModelsURL.path
     }
@@ -180,6 +206,7 @@ class ProjectViewModel: ObservableObject {
     
     init() {
         prepareDefaultModelFoldersAndPaths()
+        loadReferenceVoiceProfile()
         if paragraphs.isEmpty {
             addParagraph()
         }
@@ -292,7 +319,7 @@ class ProjectViewModel: ObservableObject {
             if !ttsModelRepo.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 try await ttsService.initializeTTS(modelRepo: ttsModelRepo)
                 isTTSReady = true
-                let newOptions = ttsService.voiceOptionsList
+                let newOptions = computedVoiceOptions()
                 debugLog("DEBUG:: [VM] Loaded \(newOptions.count) Qwen voice presets")
                 voiceOptions = newOptions
                 remapParagraphVoicesIfNeeded()
@@ -339,7 +366,7 @@ class ProjectViewModel: ObservableObject {
             modelUpdateNarrative = "Loading downloaded Qwen model..."
             try await ttsService.initializeTTS(modelRepo: repo)
             isTTSReady = true
-            voiceOptions = ttsService.voiceOptionsList
+            voiceOptions = computedVoiceOptions()
             remapParagraphVoicesIfNeeded()
             modelUpdateProgress = 1.0
             modelUpdateNarrative = "Qwen model downloaded and ready."
@@ -380,6 +407,174 @@ class ProjectViewModel: ObservableObject {
     func openTTSDownloadPage() {
         guard let url = ttsDownloadURL else { return }
         NSWorkspace.shared.open(url)
+    }
+
+    func openReferenceVoiceEnrollment() {
+        isReferenceVoiceSheetPresented = true
+        if referenceVoiceScript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            referenceVoiceScript = Self.defaultReferenceVoiceScript
+        }
+        if referenceVoiceProfile == nil {
+            referenceVoiceEnrollmentStatus = "Record in a quiet room. Best results use the VoiceDesign Qwen model with 8-20 seconds of clean speech."
+        }
+        Task {
+            await prepareReferenceVoiceModelIfNeeded()
+        }
+    }
+
+    var preferredReferenceVoiceModelRepo: String {
+        TTSService.preferredReferenceVoiceModelRepo
+    }
+
+    var isPreferredReferenceVoiceModelSelected: Bool {
+        ttsModelRepo.trimmingCharacters(in: .whitespacesAndNewlines) == preferredReferenceVoiceModelRepo
+    }
+
+    var isPreferredReferenceVoiceModelCached: Bool {
+        ttsService.isModelCached(modelRepo: preferredReferenceVoiceModelRepo)
+    }
+
+    func prepareReferenceVoiceModelIfNeeded(forceDownload: Bool = false) async {
+        if isPreparingReferenceVoiceModel || isUpdatingModels {
+            return
+        }
+
+        let preferredRepo = preferredReferenceVoiceModelRepo
+        let shouldDownload = forceDownload || !ttsService.isModelCached(modelRepo: preferredRepo)
+
+        isPreparingReferenceVoiceModel = true
+        isUpdatingModels = true
+        isProcessing = true
+        modelUpdateProgress = 0.0
+        defer {
+            isPreparingReferenceVoiceModel = false
+            isUpdatingModels = false
+            isProcessing = false
+        }
+
+        do {
+            ttsModelRepo = preferredRepo
+
+            if shouldDownload {
+                modelUpdateNarrative = "Preparing VoiceDesign model for Reference Voice..."
+                referenceVoiceEnrollmentStatus = "Downloading the VoiceDesign model needed for Reference Voice..."
+                _ = try await ttsService.downloadModel(modelRepo: preferredRepo) { progress in
+                    self.modelUpdateProgress = max(0.0, min(progress.fractionCompleted, 1.0))
+                    let percent = Int((progress.fractionCompleted * 100.0).rounded())
+                    self.modelUpdateNarrative = "Downloading VoiceDesign model... \(percent)%"
+                    self.referenceVoiceEnrollmentStatus = "Downloading VoiceDesign model for Reference Voice... \(percent)%"
+                }
+            } else {
+                modelUpdateProgress = 0.85
+                modelUpdateNarrative = "VoiceDesign model already cached. Loading it for Reference Voice..."
+                referenceVoiceEnrollmentStatus = "Loading VoiceDesign model for Reference Voice..."
+            }
+
+            modelUpdateProgress = max(modelUpdateProgress, 0.92)
+            modelUpdateNarrative = "Loading VoiceDesign model..."
+            try await ttsService.initializeTTS(modelRepo: preferredRepo)
+            isTTSReady = true
+            voiceOptions = computedVoiceOptions()
+            remapParagraphVoicesIfNeeded()
+
+            modelUpdateProgress = 1.0
+            modelUpdateNarrative = "VoiceDesign model ready."
+            referenceVoiceEnrollmentStatus = "VoiceDesign model ready. You can record and save a Reference Voice now."
+            statusMessage = "Reference Voice model ready."
+            try? await Task.sleep(nanoseconds: 1_200_000_000)
+            modelUpdateNarrative = "Idle"
+        } catch {
+            modelUpdateNarrative = "VoiceDesign model setup failed."
+            referenceVoiceEnrollmentStatus = "Failed to prepare the VoiceDesign model: \(error.localizedDescription)"
+            statusMessage = "Reference Voice model setup failed: \(error.localizedDescription)"
+        }
+    }
+
+    func generateReferenceVoiceScript() async {
+        isGeneratingReferenceVoiceScript = true
+        defer { isGeneratingReferenceVoiceScript = false }
+
+        let generated = await llmService.generateReferenceVoiceScript().trimmingCharacters(in: .whitespacesAndNewlines)
+        if generated.isEmpty || generated.hasPrefix("Error:") {
+            referenceVoiceScript = Self.defaultReferenceVoiceScript
+            referenceVoiceEnrollmentStatus = "Using fallback script. Initialize the LLM for AI-generated reference text."
+        } else {
+            referenceVoiceScript = generated
+            referenceVoiceEnrollmentStatus = "Generated a fresh reference script."
+        }
+    }
+
+    func startReferenceVoiceRecording() async {
+        do {
+            try await referenceVoiceRecorder.startRecording(to: referenceVoiceRecordingURL)
+            isRecordingReferenceVoice = true
+            referenceVoiceEnrollmentStatus = "Recording… read both paragraphs in your natural voice."
+        } catch {
+            referenceVoiceEnrollmentStatus = error.localizedDescription
+            statusMessage = error.localizedDescription
+        }
+    }
+
+    func stopReferenceVoiceRecording() {
+        referenceVoiceRecorder.stopRecording()
+        isRecordingReferenceVoice = false
+        referenceVoiceEnrollmentStatus = "Recording stopped. Save to trim silence and enroll this as Reference Voice."
+    }
+
+    func saveReferenceVoiceProfile() {
+        let transcript = referenceVoiceScript.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !transcript.isEmpty else {
+            referenceVoiceEnrollmentStatus = "Add or generate a reference script first."
+            return
+        }
+        guard FileManager.default.fileExists(atPath: referenceVoiceRecordingURL.path) else {
+            referenceVoiceEnrollmentStatus = "Record a reference sample before saving."
+            return
+        }
+
+        let summary: ReferenceVoiceRecorder.RecordingSummary
+        do {
+            summary = try referenceVoiceRecorder.finalizeRecording(
+                at: referenceVoiceRecordingURL,
+                targetSampleRate: ttsService.sampleRate
+            )
+        } catch {
+            referenceVoiceEnrollmentStatus = error.localizedDescription
+            statusMessage = error.localizedDescription
+            return
+        }
+
+        let profile = ReferenceVoiceProfile(
+            transcript: transcript,
+            audioPath: referenceVoiceRecordingURL.path
+        )
+
+        do {
+            try FileManager.default.createDirectory(at: referenceVoiceDirectoryURL, withIntermediateDirectories: true)
+            let data = try JSONEncoder().encode(profile)
+            try data.write(to: referenceVoiceProfileURL)
+            referenceVoiceProfile = profile
+            refreshVoiceOptions()
+            let durationText = String(format: "%.1f", summary.durationSeconds)
+            let guidance = TTSService.prefersVoiceDesignForReferenceVoice(modelRepo: ttsModelRepo)
+                ? ""
+                : " Switch Qwen to a VoiceDesign repo for better cloning quality."
+            let silenceNote = summary.trimmedSilence ? " Leading/trailing silence removed." : ""
+            referenceVoiceEnrollmentStatus = "Reference Voice saved (\(durationText)s cleaned sample).\(silenceNote)\(guidance)"
+            statusMessage = "Reference Voice enrolled."
+        } catch {
+            referenceVoiceEnrollmentStatus = "Failed to save reference voice: \(error.localizedDescription)"
+        }
+    }
+
+    func deleteReferenceVoiceProfile() {
+        stopReferenceVoiceRecording()
+        try? FileManager.default.removeItem(at: referenceVoiceProfileURL)
+        try? FileManager.default.removeItem(at: referenceVoiceRecordingURL)
+        referenceVoiceProfile = nil
+        refreshVoiceOptions()
+        referenceVoiceEnrollmentStatus = "Reference voice removed."
+        statusMessage = "Reference Voice removed."
     }
 
     func pickModelDownloadDirectory() {
@@ -594,19 +789,64 @@ class ProjectViewModel: ObservableObject {
         
         let text = paragraphs[index].text
         let voiceID = paragraphs[index].voiceID
+        let voiceInstructions = paragraphs[index].voiceInstructions.trimmingCharacters(in: .whitespacesAndNewlines)
+        let referenceVoice = (voiceID == ReferenceVoiceProfile.voiceID) ? referenceVoiceProfile : nil
+        let trimmedRepo = ttsModelRepo.trimmingCharacters(in: .whitespacesAndNewlines)
         let pickerLabel = voiceOptions.first(where: { $0.id == voiceID })?.name ?? "(voice not found in presets)"
         debugLog("DEBUG:: ═════════════════════════════════════")
         debugLog("DEBUG:: [VM] Generate paragraph \(index + 1)")
         debugLog("DEBUG:: [VM]   voice ID             : \(voiceID)")
         debugLog("DEBUG:: [VM]   picker label         : \(pickerLabel)")
         debugLog("DEBUG:: [VM]   voiceOptions count    : \(voiceOptions.count)")
+        debugLog("DEBUG:: [VM]   voice instructions    : \(voiceInstructions.prefix(80))")
         debugLog("DEBUG:: [VM]   text (first 80)       : \(text.prefix(80))")
         let speed = paragraphs[index].speed.rate
         let pitchSemitones = paragraphs[index].pitch.semitones
         let filename = paragraphs[index].outputFilename.isEmpty ? "para_\(id.uuidString).wav" : paragraphs[index].outputFilename
         let outputPath = documentsURL.appendingPathComponent(filename).path
 
-        let success = await ttsService.generateAudio(text: text, outputFile: outputPath, voiceID: voiceID, speed: speed, pitchSemitones: pitchSemitones)
+        if voiceID == ReferenceVoiceProfile.voiceID, referenceVoice == nil {
+            statusMessage = "Enroll a Reference Voice before using that speaker preset."
+            paragraphs[index].isGenerating = false
+            isProcessing = false
+            return
+        }
+
+        if voiceID == ReferenceVoiceProfile.voiceID,
+           !TTSService.prefersVoiceDesignForReferenceVoice(modelRepo: trimmedRepo)
+        {
+            let preferredRepo = TTSService.preferredReferenceVoiceModelRepo
+            if ttsService.isModelCached(modelRepo: preferredRepo) {
+                statusMessage = "Switching to VoiceDesign model for Reference Voice..."
+                do {
+                    ttsModelRepo = preferredRepo
+                    try await ttsService.initializeTTS(modelRepo: preferredRepo)
+                    isTTSReady = true
+                    voiceOptions = computedVoiceOptions()
+                    remapParagraphVoicesIfNeeded()
+                } catch {
+                    statusMessage = "Reference Voice needs the VoiceDesign model: \(error.localizedDescription)"
+                    paragraphs[index].isGenerating = false
+                    isProcessing = false
+                    return
+                }
+            } else {
+                statusMessage = "Reference Voice works best with a VoiceDesign Qwen repo. Download \(preferredRepo) in Settings first."
+                paragraphs[index].isGenerating = false
+                isProcessing = false
+                return
+            }
+        }
+
+        let success = await ttsService.generateAudio(
+            text: text,
+            outputFile: outputPath,
+            voiceID: voiceID,
+            voiceInstructions: voiceInstructions,
+            referenceVoiceProfile: referenceVoice,
+            speed: speed,
+            pitchSemitones: pitchSemitones
+        )
         
         if success {
             paragraphs[index].audioPath = outputPath
@@ -835,17 +1075,13 @@ class ProjectViewModel: ObservableObject {
 
         let presetName = (format == .wav) ? AVAssetExportPresetPassthrough : AVAssetExportPresetAppleM4A
         guard let exportSession = AVAssetExportSession(asset: composition, presetName: presetName) else { return }
-        exportSession.outputURL = destinationURL
-        exportSession.outputFileType = (format == .wav) ? .wav : .m4a
-        exportSession.exportAsynchronously { [session = UncheckedSendable(value: exportSession), destinationURL] in
-            Task { @MainActor in
-                let exportSession = session.value
-                if exportSession.status == .completed {
-                    self.statusMessage = "Exported: \(destinationURL.lastPathComponent)"
-                } else {
-                    self.statusMessage = "Export failed: \(exportSession.error?.localizedDescription ?? "Unknown error")"
-                }
-            }
+        let outputFileType: AVFileType = (format == .wav) ? .wav : .m4a
+
+        do {
+            try await exportSession.export(to: destinationURL, as: outputFileType)
+            statusMessage = "Exported: \(destinationURL.lastPathComponent)"
+        } catch {
+            statusMessage = "Export failed: \(error.localizedDescription)"
         }
     }
 
@@ -859,5 +1095,39 @@ class ProjectViewModel: ObservableObject {
             }
             return paragraph
         }
+    }
+
+    private func loadReferenceVoiceProfile() {
+        guard let data = try? Data(contentsOf: referenceVoiceProfileURL),
+              let profile = try? JSONDecoder().decode(ReferenceVoiceProfile.self, from: data),
+              FileManager.default.fileExists(atPath: profile.audioPath)
+        else {
+            referenceVoiceProfile = nil
+            referenceVoiceEnrollmentStatus = "No reference voice enrolled."
+            return
+        }
+
+        referenceVoiceProfile = profile
+        referenceVoiceScript = profile.transcript
+        referenceVoiceEnrollmentStatus = "Reference Voice is ready."
+    }
+
+    private func computedVoiceOptions() -> [VoiceOption] {
+        var options = ttsService.voiceOptionsList
+        if referenceVoiceProfile != nil {
+            options.append(
+                VoiceOption(
+                    id: ReferenceVoiceProfile.voiceID,
+                    name: "Reference Voice",
+                    prompt: "Match the enrolled reference recording as closely as possible."
+                )
+            )
+        }
+        return options
+    }
+
+    private func refreshVoiceOptions() {
+        voiceOptions = computedVoiceOptions()
+        remapParagraphVoicesIfNeeded()
     }
 }

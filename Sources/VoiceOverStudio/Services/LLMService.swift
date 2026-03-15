@@ -164,6 +164,24 @@ CRITICAL CONSTRAINTS:
         return await runInference(inputText: inputText, systemPrompt: systemPrompt)
     }
 
+    func generateReferenceVoiceScript() async -> String {
+        let systemPrompt = """
+You create short recording scripts for voice-cloning or speaker-reference enrollment.
+
+Write exactly two paragraphs for an adult speaker to read aloud into a microphone.
+
+Requirements:
+- Total length: roughly 120 to 180 words.
+- Plain English prose only.
+- Include a mix of calm narration, one or two emotional turns, numbers, dates, names, and varied sentence lengths.
+- Make it sound natural to read aloud.
+- Do not use bullet points, labels, stage directions, markdown, or commentary.
+- Output only the two paragraphs.
+"""
+
+        return await runInference(inputText: "Create a reference-voice recording script.", systemPrompt: systemPrompt)
+    }
+
     // MARK: - Inference Core
 
     private func runInference(inputText: String, systemPrompt: String) async -> String {
