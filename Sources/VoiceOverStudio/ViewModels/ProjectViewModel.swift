@@ -42,6 +42,10 @@ On Tuesday morning, Maya counted four blue lanterns near the station and said th
     @Published var referenceVoiceEnrollmentStatus: String = "No reference voice enrolled."
     @Published var isPreparingReferenceVoiceModel = false
     @Published var voiceConfigurations: [VoiceConfiguration] = []
+    @Published var jingleCards: [ABCJingleCard] = []
+    @Published var jingleTimelineItems: [ABCJingleTimelineItem] = []
+    @Published var selectedJingleCardID: UUID?
+    @Published var isJingleLibrarySheetPresented = false
     @Published var selectedVoiceConfigurationID: String?
     @Published var isVoiceConfigurationPanePresented = false
     @Published var voiceConfigurationEditingParagraphID: UUID?
@@ -51,6 +55,7 @@ On Tuesday morning, Maya counted four blue lanterns near the station and said th
     private let llmService = LLMService()
     private let modelUpdater = ModelUpdaterService()
     private let referenceVoiceRecorder = ReferenceVoiceRecorder()
+    private let abcJingleService = ABCJingleService()
 
     private let llmDefaultFilename = "Llama-3.2-1B-Instruct-Q4_K_M.gguf"
     
@@ -165,6 +170,7 @@ On Tuesday morning, Maya counted four blue lanterns near the station and said th
     
     // Audio Player
     private var audioPlayer: AVAudioPlayer?
+    private var midiPreviewPlayer: AVMIDIPlayer?
 
     private var rootModelsURL: URL {
         FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/vos2026", isDirectory: true)
@@ -198,6 +204,18 @@ On Tuesday morning, Maya counted four blue lanterns near the station and said th
         rootModelsURL.appendingPathComponent("voice-configurations.json", isDirectory: false)
     }
 
+    private var jingleCardStoreURL: URL {
+        rootModelsURL.appendingPathComponent("jingle-cards.json", isDirectory: false)
+    }
+
+    private var jingleTimelineStoreURL: URL {
+        rootModelsURL.appendingPathComponent("jingle-timeline.json", isDirectory: false)
+    }
+
+    private var jingleCacheDirectoryURL: URL {
+        rootModelsURL.appendingPathComponent("jingles", isDirectory: true)
+    }
+
     var managedModelsRootDisplay: String {
         rootModelsURL.path
     }
@@ -213,6 +231,11 @@ On Tuesday morning, Maya counted four blue lanterns near the station and said th
     var activeVoiceConfigurationIndex: Int? {
         guard let selectedVoiceConfigurationID else { return nil }
         return voiceConfigurations.firstIndex(where: { $0.id == selectedVoiceConfigurationID })
+    }
+
+    var activeJingleCardIndex: Int? {
+        guard let selectedJingleCardID else { return nil }
+        return jingleCards.firstIndex(where: { $0.id == selectedJingleCardID })
     }
 
     var isEditingReferenceVoiceConfiguration: Bool {
@@ -233,6 +256,8 @@ On Tuesday morning, Maya counted four blue lanterns near the station and said th
     init() {
         prepareDefaultModelFoldersAndPaths()
         loadVoiceConfigurationStore()
+        loadJingleCardStore()
+        loadJingleTimelineStore()
         loadReferenceVoiceProfile()
         refreshVoiceOptions()
         if paragraphs.isEmpty {
@@ -279,6 +304,31 @@ On Tuesday morning, Maya counted four blue lanterns near the station and said th
         }
     }
 
+    func persistJingleCardStore() {
+        let store = ABCJingleCardStore(
+            selectedJingleCardID: selectedJingleCardID,
+            cards: jingleCards
+        )
+
+        do {
+            let data = try JSONEncoder().encode(store)
+            try data.write(to: jingleCardStoreURL, options: .atomic)
+        } catch {
+            debugLog("DEBUG:: [VM] Failed to persist jingle card store: \(error.localizedDescription)")
+        }
+    }
+
+    func persistJingleTimelineStore() {
+        let store = ABCJingleTimelineStore(items: jingleTimelineItems)
+
+        do {
+            let data = try JSONEncoder().encode(store)
+            try data.write(to: jingleTimelineStoreURL, options: .atomic)
+        } catch {
+            debugLog("DEBUG:: [VM] Failed to persist jingle timeline store: \(error.localizedDescription)")
+        }
+    }
+
     private func loadVoiceConfigurationStore() {
         guard let data = try? Data(contentsOf: voiceConfigurationStoreURL),
               let store = try? JSONDecoder().decode(VoiceConfigurationStore.self, from: data),
@@ -295,6 +345,37 @@ On Tuesday morning, Maya counted four blue lanterns near the station and said th
         if selectedVoiceConfigurationID == nil {
             selectedVoiceConfigurationID = voiceConfigurations.first?.id
         }
+    }
+
+    private func loadJingleCardStore() {
+        guard let data = try? Data(contentsOf: jingleCardStoreURL),
+              let store = try? JSONDecoder().decode(ABCJingleCardStore.self, from: data),
+              !store.cards.isEmpty
+        else {
+            jingleCards = ABCJingleCardStore.default.cards
+            selectedJingleCardID = jingleCards.first?.id
+            persistJingleCardStore()
+            return
+        }
+
+        jingleCards = store.cards
+        selectedJingleCardID = store.selectedJingleCardID ?? store.cards.first?.id
+        if selectedJingleCardID == nil {
+            selectedJingleCardID = jingleCards.first?.id
+        }
+    }
+
+    private func loadJingleTimelineStore() {
+        guard let data = try? Data(contentsOf: jingleTimelineStoreURL),
+              let store = try? JSONDecoder().decode(ABCJingleTimelineStore.self, from: data)
+        else {
+            jingleTimelineItems = ABCJingleTimelineStore.default.items
+            persistJingleTimelineStore()
+            return
+        }
+
+        jingleTimelineItems = store.items
+        normalizeJingleTimelineItems()
     }
 
     func openVoiceConfiguration(for paragraphID: UUID) {
@@ -362,6 +443,207 @@ On Tuesday morning, Maya counted four blue lanterns near the station and said th
 
         return resolvedVoiceConfiguration(for: voiceID)?.promptText
             ?? "No structured voice prompt available."
+    }
+
+    func selectJingleCard(_ id: UUID?) {
+        selectedJingleCardID = id
+        persistJingleCardStore()
+    }
+
+    func openJingleLibrary() {
+        if selectedJingleCardID == nil {
+            selectedJingleCardID = jingleCards.first?.id
+        }
+        isJingleLibrarySheetPresented = true
+    }
+
+    func addJingleCard(from preset: ABCJinglePreset? = nil) {
+        let chosenPreset = preset ?? ABCJinglePreset.builtIn.first
+        let card: ABCJingleCard
+        if let chosenPreset {
+            card = ABCJingleCard(
+                name: chosenPreset.name,
+                category: "Presets",
+                tags: chosenPreset.defaultPromptSpec.styleTags,
+                authoringMode: .promptOnly,
+                promptSpec: chosenPreset.defaultPromptSpec,
+                abcSource: "",
+                isEnabled: true,
+                speechSafety: .review
+            )
+        } else {
+            card = ABCJingleCard(name: "New Jingle")
+        }
+
+        jingleCards.append(card)
+        selectedJingleCardID = card.id
+        persistJingleCardStore()
+    }
+
+    func duplicateJingleCard(_ id: UUID) {
+        guard let index = jingleCards.firstIndex(where: { $0.id == id }) else { return }
+        var copy = jingleCards[index]
+        copy.id = UUID()
+        copy.name += " Copy"
+        copy.createdAt = Date()
+        copy.updatedAt = Date()
+        copy.lastValidatedAt = nil
+        copy.cachedMIDIPath = nil
+        jingleCards.insert(copy, at: index + 1)
+        selectedJingleCardID = copy.id
+        persistJingleCardStore()
+    }
+
+    func removeJingleCard(_ id: UUID) {
+        guard let index = jingleCards.firstIndex(where: { $0.id == id }) else { return }
+        jingleCards.remove(at: index)
+        jingleTimelineItems.removeAll { $0.jingleCardID == id }
+        if selectedJingleCardID == id {
+            selectedJingleCardID = jingleCards.first?.id
+        }
+        persistJingleCardStore()
+        persistJingleTimelineStore()
+    }
+
+    func addJingleCardToTimeline(_ jingleCardID: UUID, afterParagraphID: UUID?) {
+        guard jingleCards.contains(where: { $0.id == jingleCardID }) else { return }
+        jingleTimelineItems.append(ABCJingleTimelineItem(jingleCardID: jingleCardID, afterParagraphID: afterParagraphID))
+        persistJingleTimelineStore()
+        statusMessage = "Added jingle to timeline."
+    }
+
+    func openTimelineJingle(_ itemID: UUID) {
+        guard let item = jingleTimelineItems.first(where: { $0.id == itemID }) else { return }
+        selectedJingleCardID = item.jingleCardID
+        isJingleLibrarySheetPresented = true
+    }
+
+    func removeTimelineJingle(_ itemID: UUID) {
+        jingleTimelineItems.removeAll { $0.id == itemID }
+        persistJingleTimelineStore()
+    }
+
+    func jingleTimelineItems(after paragraphID: UUID?) -> [ABCJingleTimelineItem] {
+        jingleTimelineItems
+            .filter { $0.afterParagraphID == paragraphID }
+            .sorted { $0.createdAt < $1.createdAt }
+    }
+
+    func timelineStartText(for itemID: UUID) -> String {
+        let seconds = timelineStartSeconds(for: itemID)
+        let minutes = Int(seconds) / 60
+        let remainingSeconds = Int(seconds) % 60
+        return String(format: "%02d:%02d", minutes, remainingSeconds)
+    }
+
+    func timelineJingleDurationText(for jingleCardID: UUID) -> String {
+        let duration = jingleCards.first(where: { $0.id == jingleCardID })?.promptSpec.targetDurationSeconds ?? 0
+        return String(format: "%.1fs", duration)
+    }
+
+    func updateJingleCard(_ card: ABCJingleCard) {
+        guard let index = jingleCards.firstIndex(where: { $0.id == card.id }) else { return }
+        var updated = card
+        updated.updatedAt = Date()
+        jingleCards[index] = updated
+        persistJingleCardStore()
+    }
+
+    func validateJingleCard(_ id: UUID) {
+        guard let index = jingleCards.firstIndex(where: { $0.id == id }) else { return }
+        do {
+            let result = try abcJingleService.validate(card: jingleCards[index])
+            let safety = abcJingleService.suggestedSpeechSafety(for: result.analysis)
+            jingleCards[index] = jingleCards[index].updatingValidationState(speechSafety: safety)
+            let warningCount = result.analysis.warnings.count
+            statusMessage = warningCount == 0
+                ? "Validated jingle \(jingleCards[index].name)."
+                : "Validated jingle \(jingleCards[index].name) with \(warningCount) warning(s)."
+            persistJingleCardStore()
+        } catch {
+            statusMessage = "Jingle validation failed: \(error.localizedDescription)"
+        }
+    }
+
+    func exportJingleCardMIDI(_ id: UUID) {
+        guard let index = jingleCards.firstIndex(where: { $0.id == id }) else { return }
+        let filename = "jingle-\(id.uuidString).mid"
+        let outputURL = jingleCacheDirectoryURL.appendingPathComponent(filename, isDirectory: false)
+
+        do {
+            let result = try abcJingleService.exportMIDI(abcSource: jingleCards[index].abcSource, to: outputURL)
+            try writeJingleMIDIDiagnostics(result: result, midiURL: outputURL)
+            let safety = abcJingleService.suggestedSpeechSafety(for: result.analysis)
+            jingleCards[index] = jingleCards[index].updatingValidationState(speechSafety: safety, cachedMIDIPath: outputURL.path)
+            statusMessage = "Exported MIDI for jingle \(jingleCards[index].name)."
+            persistJingleCardStore()
+        } catch {
+            statusMessage = "Jingle MIDI export failed: \(error.localizedDescription)"
+        }
+    }
+
+    func generateTemplateJingle(for id: UUID) {
+        guard let index = jingleCards.firstIndex(where: { $0.id == id }) else { return }
+
+        let generated = abcJingleService.generateDeterministicABC(for: jingleCards[index])
+
+        do {
+            let validation = try abcJingleService.validate(abcSource: generated)
+            let safety = abcJingleService.suggestedSpeechSafety(for: validation.analysis)
+            var updated = jingleCards[index]
+            updated.abcSource = generated
+            if updated.authoringMode == .promptOnly {
+                updated.authoringMode = .promptAndABC
+            }
+            updated.updatedAt = Date()
+            updated.cachedMIDIPath = nil
+            updated.lastValidatedAt = Date()
+            updated.speechSafety = safety
+            jingleCards[index] = updated
+            persistJingleCardStore()
+            statusMessage = "Generated a deterministic jingle template for \(updated.name)."
+        } catch {
+            statusMessage = "Template jingle generation failed validation: \(error.localizedDescription)"
+        }
+    }
+
+    func playJingleCardPreview(_ id: UUID) {
+        guard let index = jingleCards.firstIndex(where: { $0.id == id }) else { return }
+        let filename = "jingle-preview-\(id.uuidString)-\(UUID().uuidString).mid"
+        let outputURL = jingleCacheDirectoryURL.appendingPathComponent(filename, isDirectory: false)
+
+        do {
+            let result = try abcJingleService.exportMIDI(abcSource: jingleCards[index].abcSource, to: outputURL)
+            try writeJingleMIDIDiagnostics(result: result, midiURL: outputURL)
+            let safety = abcJingleService.suggestedSpeechSafety(for: result.analysis)
+            jingleCards[index] = jingleCards[index].updatingValidationState(speechSafety: safety, cachedMIDIPath: outputURL.path)
+
+            guard let soundBankURL = defaultMIDISoundBankURL() else {
+                statusMessage = "No system MIDI soundbank was found for jingle preview."
+                persistJingleCardStore()
+                return
+            }
+
+            midiPreviewPlayer?.stop()
+            midiPreviewPlayer = try AVMIDIPlayer(contentsOf: outputURL, soundBankURL: soundBankURL)
+            midiPreviewPlayer?.prepareToPlay()
+            midiPreviewPlayer?.play {
+                Task { @MainActor in
+                    self.statusMessage = "Jingle preview finished."
+                }
+            }
+
+            statusMessage = "Previewing jingle \(jingleCards[index].name)."
+            persistJingleCardStore()
+        } catch {
+            statusMessage = "Jingle preview failed: \(error.localizedDescription)"
+        }
+    }
+
+    private func writeJingleMIDIDiagnostics(result: ABCJingleRenderResult, midiURL: URL) throws {
+        let reportURL = midiURL.deletingPathExtension().appendingPathExtension("debug.txt")
+        let report = abcJingleService.diagnosticReport(for: result)
+        try report.write(to: reportURL, atomically: true, encoding: .utf8)
     }
 
     private func defaultVoiceConfigurationID() -> String {
@@ -863,12 +1145,17 @@ On Tuesday morning, Maya counted four blue lanterns near the station and said th
     }
     
     func removeParagraph(at index: Int) {
+        let removedID = paragraphs[index].id
+        let replacementAnchor = index > 0 ? paragraphs[index - 1].id : nil
         paragraphs.remove(at: index)
+        reanchorTimelineItems(from: removedID, to: replacementAnchor)
     }
 
     func removeParagraph(_ id: UUID) {
         guard let index = paragraphs.firstIndex(where: { $0.id == id }) else { return }
+        let replacementAnchor = index > 0 ? paragraphs[index - 1].id : nil
         paragraphs.remove(at: index)
+        reanchorTimelineItems(from: id, to: replacementAnchor)
     }
 
     func moveParagraphs(from source: IndexSet, to destination: Int) {
@@ -1030,6 +1317,7 @@ On Tuesday morning, Maya counted four blue lanterns near the station and said th
                     return p
                 }
                 remapParagraphVoicesIfNeeded()
+                normalizeJingleTimelineItems()
                 statusMessage = "Transcript loaded (\(loaded.count) paragraphs)."
             } catch {
                 statusMessage = "Load failed: \(error.localizedDescription)"
@@ -1040,6 +1328,8 @@ On Tuesday morning, Maya counted four blue lanterns near the station and said th
     func stopPlayback() {
         audioPlayer?.stop()
         audioPlayer = nil
+        midiPreviewPlayer?.stop()
+        midiPreviewPlayer = nil
     }
 
     func playAudio(for id: UUID) {
@@ -1055,6 +1345,10 @@ On Tuesday morning, Maya counted four blue lanterns near the station and said th
             print("Playback error: \(error)")
             statusMessage = "Playback Error: \(error.localizedDescription)"
         }
+    }
+
+    private func defaultMIDISoundBankURL() -> URL? {
+        MIDIAudioRenderer.defaultSoundBankURL()
     }
     
     func improveText(for id: UUID) async {
@@ -1150,14 +1444,16 @@ On Tuesday morning, Maya counted four blue lanterns near the station and said th
     
     func exportFullSequence() async {
         statusMessage = "Exporting full sequence..."
-        
-        // Collect paragraph/audio pairs preserving gap association
-        let audioItems = paragraphs.compactMap { p -> (Paragraph, URL)? in
-            guard let path = p.audioPath else { return nil }
-            return (p, URL(fileURLWithPath: path))
+
+        let exportSegments: [(url: URL, gapAfter: Double)]
+        do {
+            exportSegments = try buildFullSequenceExportSegments()
+        } catch {
+            statusMessage = "Export failed: \(error.localizedDescription)"
+            return
         }
-        
-        guard !audioItems.isEmpty else {
+
+        guard !exportSegments.isEmpty else {
             statusMessage = "No audio generated to export."
             return
         }
@@ -1170,9 +1466,9 @@ On Tuesday morning, Maya counted four blue lanterns near the station and said th
         }
         
         var currentTime = CMTime.zero
-        
-        for item in audioItems {
-            let asset = AVURLAsset(url: item.1)
+
+        for item in exportSegments {
+            let asset = AVURLAsset(url: item.url)
             do {
                 let tracks = try await asset.loadTracks(withMediaType: .audio)
                 guard let assetTrack = tracks.first else { continue }
@@ -1182,8 +1478,7 @@ On Tuesday morning, Maya counted four blue lanterns near the station and said th
 
                 currentTime = CMTimeAdd(currentTime, duration)
 
-                // Add gap
-                let gapSeconds = item.0.gapDuration
+                let gapSeconds = item.gapAfter
                 if gapSeconds > 0 {
                     let gapDuration = CMTime(seconds: gapSeconds, preferredTimescale: 600)
                     track.insertEmptyTimeRange(CMTimeRange(start: currentTime, duration: gapDuration))
@@ -1221,6 +1516,45 @@ On Tuesday morning, Maya counted four blue lanterns near the station and said th
         }
     }
 
+    private func buildFullSequenceExportSegments() throws -> [(url: URL, gapAfter: Double)] {
+        var segments: [(url: URL, gapAfter: Double)] = []
+        var renderedJingleAudio: [UUID: URL] = [:]
+
+        for item in jingleTimelineItems(after: nil) {
+            let audioURL = try renderedAudioURL(for: item.jingleCardID, cache: &renderedJingleAudio)
+            segments.append((audioURL, 0))
+        }
+
+        for paragraph in paragraphs {
+            guard let path = paragraph.audioPath else { continue }
+            segments.append((URL(fileURLWithPath: path), max(0, paragraph.gapDuration)))
+
+            for item in jingleTimelineItems(after: paragraph.id) {
+                let audioURL = try renderedAudioURL(for: item.jingleCardID, cache: &renderedJingleAudio)
+                segments.append((audioURL, 0))
+            }
+        }
+
+        return segments
+    }
+
+    private func renderedAudioURL(for jingleCardID: UUID, cache: inout [UUID: URL]) throws -> URL {
+        if let cachedURL = cache[jingleCardID] {
+            return cachedURL
+        }
+
+        guard let card = jingleCards.first(where: { $0.id == jingleCardID }) else {
+            throw NSError(domain: "ProjectViewModel", code: -30, userInfo: [NSLocalizedDescriptionKey: "Missing jingle card for export."])
+        }
+
+        let renderResult = try abcJingleService.render(card: card)
+        let audioURL = jingleCacheDirectoryURL.appendingPathComponent("jingle-audio-\(jingleCardID.uuidString).wav", isDirectory: false)
+        try MIDIAudioRenderer.render(midiData: renderResult.midiData, midiTracks: renderResult.midiTracks, outputURL: audioURL)
+        try writeJingleMIDIDiagnostics(result: renderResult, midiURL: audioURL.deletingPathExtension().appendingPathExtension("mid"))
+        cache[jingleCardID] = audioURL
+        return audioURL
+    }
+
     private func remapParagraphVoicesIfNeeded() {
         let validVoiceIDs = Set(voiceOptions.map(\ .id))
         let defaultVoiceID = defaultVoiceConfigurationID()
@@ -1232,6 +1566,66 @@ On Tuesday morning, Maya counted four blue lanterns near the station and said th
             }
             return paragraph
         }
+    }
+
+    private func normalizeJingleTimelineItems() {
+        let validParagraphIDs = Set(paragraphs.map(\.id))
+        let validJingleIDs = Set(jingleCards.map(\.id))
+        jingleTimelineItems = jingleTimelineItems.compactMap { item in
+            guard validJingleIDs.contains(item.jingleCardID) else { return nil }
+            var normalized = item
+            if let afterParagraphID = normalized.afterParagraphID,
+               !validParagraphIDs.contains(afterParagraphID) {
+                normalized.afterParagraphID = nil
+            }
+            return normalized
+        }
+        persistJingleTimelineStore()
+    }
+
+    private func reanchorTimelineItems(from oldParagraphID: UUID, to newParagraphID: UUID?) {
+        jingleTimelineItems = jingleTimelineItems.map { item in
+            guard item.afterParagraphID == oldParagraphID else { return item }
+            var updated = item
+            updated.afterParagraphID = newParagraphID
+            return updated
+        }
+        persistJingleTimelineStore()
+    }
+
+    private func timelineStartSeconds(for itemID: UUID) -> Double {
+        var currentTime = 0.0
+
+        for item in jingleTimelineItems(after: nil) {
+            if item.id == itemID {
+                return currentTime
+            }
+            currentTime += timelineJingleDurationSeconds(for: item.jingleCardID)
+        }
+
+        for paragraph in paragraphs {
+            currentTime += estimatedParagraphDuration(for: paragraph)
+            currentTime += max(0, paragraph.gapDuration)
+
+            for item in jingleTimelineItems(after: paragraph.id) {
+                if item.id == itemID {
+                    return currentTime
+                }
+                currentTime += timelineJingleDurationSeconds(for: item.jingleCardID)
+            }
+        }
+
+        return currentTime
+    }
+
+    private func timelineJingleDurationSeconds(for jingleCardID: UUID) -> Double {
+        max(0, jingleCards.first(where: { $0.id == jingleCardID })?.promptSpec.targetDurationSeconds ?? 0)
+    }
+
+    private func estimatedParagraphDuration(for paragraph: Paragraph) -> Double {
+        let words = max(1, paragraph.text.split(whereSeparator: \.isWhitespace).count)
+        let wordsPerSecond = max(1.5, 2.6 * Double(paragraph.speed.rate))
+        return max(0.8, Double(words) / wordsPerSecond)
     }
 
     private func loadReferenceVoiceProfile() {

@@ -70,5 +70,10 @@ let package = Package(
                 ], .when(platforms: [.macOS]))
             ]
         ),
+        .testTarget(
+            name: "VoiceOverStudioTests",
+            dependencies: ["VoiceOverStudio"],
+            path: "Tests/VoiceOverStudioTests"
+        ),
     ]
 )

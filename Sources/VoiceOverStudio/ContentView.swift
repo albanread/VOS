@@ -19,36 +19,60 @@ struct ContentView: View {
                 VStack(spacing: 0) {
                     ScrollView(.vertical) {
                         LazyVStack(alignment: .leading, spacing: 10) {
+                            ForEach(viewModel.jingleTimelineItems(after: nil)) { item in
+                                JingleTimelineRow(
+                                    title: "Jingle",
+                                    startTime: viewModel.timelineStartText(for: item.id),
+                                    duration: viewModel.timelineJingleDurationText(for: item.jingleCardID),
+                                    onOpen: { viewModel.openTimelineJingle(item.id) },
+                                    onRemove: { viewModel.removeTimelineJingle(item.id) }
+                                )
+                                .frame(maxWidth: 980)
+                                .frame(maxWidth: .infinity, alignment: .center)
+                            }
+
                             ForEach($viewModel.paragraphs) { $paragraph in
-                                ParagraphRow(paragraph: $paragraph,
-                                             voiceOptions: viewModel.voiceOptions,
-                                             isTTSReady: viewModel.isTTSReady,
-                                             isLLMReady: viewModel.isLLMReady,
-                                             viewModel: viewModel,
-                                             onGenerate: {
-                                                 Task { await viewModel.generateAudio(for: paragraph.id) }
-                                             },
-                                             onPlay: {
-                                                 viewModel.playAudio(for: paragraph.id)
-                                             },
-                                             onImprove: {
-                                                 Task { await viewModel.improveText(for: paragraph.id) }
-                                             },
-                                             onRephrase: {
-                                                 Task { await viewModel.rephraseText(for: paragraph.id) }
-                                             },
-                                             onDuplicate: {
-                                                 viewModel.duplicateParagraph(paragraph.id)
-                                             },
-                                             onRemove: {
-                                                 viewModel.removeParagraph(paragraph.id)
-                                             },
-                                             onConfigureVoice: {
-                                                 viewModel.openVoiceConfiguration(for: paragraph.id)
-                                             },
-                                             onVoiceSelectionChanged: { selectedVoiceID in
-                                                 viewModel.handleVoiceSelectionChange(for: paragraph.id, voiceID: selectedVoiceID)
-                                             })
+                                VStack(alignment: .leading, spacing: 10) {
+                                    ParagraphRow(paragraph: $paragraph,
+                                                 voiceOptions: viewModel.voiceOptions,
+                                                 isTTSReady: viewModel.isTTSReady,
+                                                 isLLMReady: viewModel.isLLMReady,
+                                                 viewModel: viewModel,
+                                                 onGenerate: {
+                                                     Task { await viewModel.generateAudio(for: paragraph.id) }
+                                                 },
+                                                 onPlay: {
+                                                     viewModel.playAudio(for: paragraph.id)
+                                                 },
+                                                 onImprove: {
+                                                     Task { await viewModel.improveText(for: paragraph.id) }
+                                                 },
+                                                 onRephrase: {
+                                                     Task { await viewModel.rephraseText(for: paragraph.id) }
+                                                 },
+                                                 onDuplicate: {
+                                                     viewModel.duplicateParagraph(paragraph.id)
+                                                 },
+                                                 onRemove: {
+                                                     viewModel.removeParagraph(paragraph.id)
+                                                 },
+                                                 onConfigureVoice: {
+                                                     viewModel.openVoiceConfiguration(for: paragraph.id)
+                                                 },
+                                                 onVoiceSelectionChanged: { selectedVoiceID in
+                                                     viewModel.handleVoiceSelectionChange(for: paragraph.id, voiceID: selectedVoiceID)
+                                                 })
+
+                                    ForEach(viewModel.jingleTimelineItems(after: paragraph.id)) { item in
+                                        JingleTimelineRow(
+                                            title: "Jingle",
+                                            startTime: viewModel.timelineStartText(for: item.id),
+                                            duration: viewModel.timelineJingleDurationText(for: item.jingleCardID),
+                                            onOpen: { viewModel.openTimelineJingle(item.id) },
+                                            onRemove: { viewModel.removeTimelineJingle(item.id) }
+                                        )
+                                    }
+                                }
                                 .frame(maxWidth: 980)
                                 .frame(maxWidth: .infinity, alignment: .center)
                             }
@@ -127,6 +151,10 @@ struct ContentView: View {
                         Label("Export Sequence", systemImage: "square.and.arrow.down")
                     }
                     .disabled(viewModel.paragraphs.isEmpty)
+
+                    Button(action: viewModel.openJingleLibrary) {
+                        Label("Jingles", systemImage: "music.note.list")
+                    }
                 }
             }
         }
@@ -136,9 +164,19 @@ struct ContentView: View {
             ReferenceVoiceEnrollmentSheet()
                 .environmentObject(viewModel)
         }
+        .sheet(isPresented: $viewModel.isJingleLibrarySheetPresented) {
+            JingleLibrarySheet()
+                .environmentObject(viewModel)
+        }
         .onChange(of: viewModel.voiceConfigurations) {
             viewModel.persistVoiceConfigurationStore()
             viewModel.refreshVoiceOptions()
+        }
+        .onChange(of: viewModel.jingleCards) {
+            viewModel.persistJingleCardStore()
+        }
+        .onChange(of: viewModel.jingleTimelineItems) {
+            viewModel.persistJingleTimelineStore()
         }
         .onAppear {
             guard !didApplyInitialPaneVisibility else { return }
@@ -307,6 +345,20 @@ struct ContentView: View {
                         viewModel.openReferenceVoiceEnrollment()
                     }
                     .buttonStyle(.bordered)
+
+                    Divider().padding(.vertical, 4)
+
+                    Text("Jingle Cards")
+                        .font(.subheadline)
+
+                    Text("Prompt-first or ABC-first reusable music cues for intros, transitions, bumpers, and outros.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+
+                    Button("Open Jingle Library") {
+                        viewModel.openJingleLibrary()
+                    }
+                    .buttonStyle(.bordered)
                 }
 
                 Spacer(minLength: 8)
@@ -351,6 +403,222 @@ struct ContentView: View {
             .padding()
         }
         .background(Color(NSColor.controlBackgroundColor))
+    }
+}
+
+struct JingleLibrarySheet: View {
+    @EnvironmentObject private var viewModel: ProjectViewModel
+
+    var body: some View {
+        HStack(spacing: 0) {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack {
+                    Text("Jingle Cards")
+                        .font(.title3)
+                        .fontWeight(.bold)
+                    Spacer()
+                    Menu("Add") {
+                        ForEach(ABCJinglePreset.builtIn) { preset in
+                            Button(preset.name) {
+                                viewModel.addJingleCard(from: preset)
+                            }
+                        }
+                        Divider()
+                        Button("Blank Jingle") {
+                            viewModel.addJingleCard(from: nil)
+                        }
+                    }
+                }
+
+                List(selection: Binding(get: {
+                    viewModel.selectedJingleCardID
+                }, set: { newValue in
+                    viewModel.selectJingleCard(newValue)
+                })) {
+                    ForEach(viewModel.jingleCards) { card in
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(card.name)
+                            Text(card.promptSpec.cueRole.description)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        .tag(card.id)
+                    }
+                }
+
+                HStack {
+                    if let selectedID = viewModel.selectedJingleCardID {
+                        Button("Duplicate") {
+                            viewModel.duplicateJingleCard(selectedID)
+                        }
+                        Button("Remove") {
+                            viewModel.removeJingleCard(selectedID)
+                        }
+                    }
+                }
+                .controlSize(.small)
+            }
+            .frame(width: 240)
+            .padding(16)
+
+            Divider()
+
+            Group {
+                if let index = viewModel.activeJingleCardIndex {
+                    JingleCardEditor(card: $viewModel.jingleCards[index])
+                } else {
+                    ContentUnavailableView("No Jingle Selected", systemImage: "music.note")
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+        .frame(minWidth: 900, minHeight: 580)
+    }
+}
+
+struct JingleCardEditor: View {
+    @EnvironmentObject private var viewModel: ProjectViewModel
+    @Binding var card: ABCJingleCard
+
+    private var styleTagsText: Binding<String> {
+        Binding(
+            get: { card.promptSpec.styleTags.joined(separator: ", ") },
+            set: { card.promptSpec.styleTags = $0.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty } }
+        )
+    }
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 14) {
+                VStack(alignment: .leading, spacing: 10) {
+                    HStack(alignment: .center, spacing: 12) {
+                        TextField("Jingle name", text: $card.name)
+                            .textFieldStyle(.roundedBorder)
+
+                        TextField("Category", text: $card.category)
+                            .textFieldStyle(.roundedBorder)
+                            .frame(width: 160)
+
+                        Picker("Role", selection: $card.promptSpec.cueRole) {
+                            ForEach(ABCJingleCueRole.allCases, id: \.self) { role in
+                                Text(role.description).tag(role)
+                            }
+                        }
+                        .frame(width: 180)
+
+                        Text("Seconds")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        TextField("2.0", value: $card.promptSpec.targetDurationSeconds, format: .number)
+                            .textFieldStyle(.roundedBorder)
+                            .frame(width: 72)
+                    }
+
+                    HStack(alignment: .center, spacing: 12) {
+                        TextField("Template notes", text: $card.promptSpec.promptText)
+                            .textFieldStyle(.roundedBorder)
+                        TextField("Style tags", text: styleTagsText)
+                            .textFieldStyle(.roundedBorder)
+                            .frame(minWidth: 220)
+                        Text("Speech safety: \(card.speechSafety.rawValue.capitalized)")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .padding(12)
+                .background(Color(NSColor.controlBackgroundColor))
+                .cornerRadius(10)
+
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Editable ABC")
+                        .font(.headline)
+                    TextEditor(text: $card.abcSource)
+                        .font(.system(.body, design: .monospaced))
+                        .frame(minHeight: 320)
+                        .padding(6)
+                        .background(Color(NSColor.textBackgroundColor))
+                        .cornerRadius(6)
+                }
+
+                HStack {
+                    Menu("Add to Timeline") {
+                        Button("Before first paragraph") {
+                            viewModel.addJingleCardToTimeline(card.id, afterParagraphID: nil)
+                        }
+
+                        ForEach(Array(viewModel.paragraphs.enumerated()), id: \.element.id) { index, paragraph in
+                            Button("After paragraph \(index + 1)") {
+                                viewModel.addJingleCardToTimeline(card.id, afterParagraphID: paragraph.id)
+                            }
+                        }
+                    }
+                    Button("Generate Template") {
+                        viewModel.generateTemplateJingle(for: card.id)
+                    }
+                    Button("Validate") {
+                        viewModel.validateJingleCard(card.id)
+                    }
+                    Button("Preview") {
+                        viewModel.playJingleCardPreview(card.id)
+                    }
+                    Button("Stop") {
+                        viewModel.stopPlayback()
+                    }
+                    Button("Export MIDI") {
+                        viewModel.exportJingleCardMIDI(card.id)
+                    }
+                    Spacer()
+                    if let path = card.cachedMIDIPath, !path.isEmpty {
+                        Text(URL(fileURLWithPath: path).lastPathComponent)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .buttonStyle(.bordered)
+            }
+            .padding(18)
+        }
+    }
+}
+
+struct JingleTimelineRow: View {
+    let title: String
+    let startTime: String
+    let duration: String
+    let onOpen: () -> Void
+    let onRemove: () -> Void
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Button(action: onOpen) {
+                HStack(spacing: 8) {
+                    Image(systemName: "music.note")
+                        .foregroundStyle(.orange)
+                    Text(title)
+                        .font(.subheadline)
+                        .fontWeight(.semibold)
+                    Text(startTime)
+                        .font(.caption)
+                        .monospacedDigit()
+                        .foregroundStyle(.secondary)
+                    Text(duration)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 8)
+                .background(Color(NSColor.controlBackgroundColor))
+                .cornerRadius(8)
+            }
+            .buttonStyle(.plain)
+
+            Button(action: onRemove) {
+                Image(systemName: "xmark.circle.fill")
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+        }
     }
 }
 
