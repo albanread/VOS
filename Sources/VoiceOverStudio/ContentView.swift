@@ -707,7 +707,12 @@ struct ReferenceVoiceEnrollmentSheet: View {
                 Button("Save Reference Voice") {
                     viewModel.saveReferenceVoiceProfile()
                 }
-                .disabled(viewModel.isRecordingReferenceVoice)
+                .disabled(viewModel.isRecordingReferenceVoice || viewModel.isCleaningReferenceVoice)
+
+                Button(viewModel.isCleaningReferenceVoice ? "Cleaning..." : "Clean and Save") {
+                    Task { await viewModel.cleanAndSaveReferenceVoiceProfile() }
+                }
+                .disabled(viewModel.isRecordingReferenceVoice || viewModel.isCleaningReferenceVoice)
 
                 if viewModel.referenceVoiceProfile != nil {
                     Button("Delete Reference Voice") {

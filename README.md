@@ -12,6 +12,8 @@ Like many A.I. features this is very non-deterministic,  meaning that voices dri
 - Paragraph-centric editor with per-paragraph text, voice preset, speed, gap, and output filename.
 - Local inference only: llama.cpp GGUF for Improve/Rephrase and `mlx-audio-swift` + `mlx-swift` for Qwen3-TTS speech generation.
 - Audio workflow: per-paragraph WAV generation, inline preview, and stitched export to M4A or WAV.
+- Audio shaping: per-paragraph pitch control, tempo-style speed control, and post-generation speech loudness normalization for more consistent output levels.
+- Reference Voice workflow: record a short sample, optionally run speech cleanup with **Clean and Save**, then use that enrolled voice for cloning-style generation.
 - Guided setup: compute-tier presets choose recommended GGUF and Qwen model repos, with managed downloads under `~/Library/vos2026`.
 - Project IO: save/load transcript JSON and re-generate missing paragraph audio.
 
@@ -19,7 +21,8 @@ Like many A.I. features this is very non-deterministic,  meaning that voices dri
 - **LLM**: local llama.cpp static libraries linked through the `LLamaC` target.
 - **TTS**: native Swift MLX runtime via `mlx-audio-swift` (`MLXAudioCore`, `MLXAudioTTS`) plus `MLX` from `mlx-swift`, loading Qwen3-TTS model repos from Hugging Face.
 - **Voice selection**: app-defined prompt presets such as `narrator_clear`, `narrator_warm`, and `documentary`, rather than numeric speaker IDs.
-- **Audio pipeline**: generated WAVs are stored per paragraph, previewed locally, and merged with configured gaps for final export.
+- **Audio pipeline**: generated WAVs are stored per paragraph, can be tempo-adjusted and pitch-shifted after generation, then normalized to a more consistent speech level before preview/export.
+- **Reference voice cleanup**: the enrollment flow can run MLX speech enhancement on a noisy microphone sample before saving the reference voice profile.
 
 ## Voice backend change
 - Voice generation no longer uses Apple TTS or Sherpa/ONNX voices.
@@ -105,9 +108,10 @@ Use `./Scripts/build-app-bundle.sh` when you need to test microphone permissions
 ## Using the app
 1. Launch `VoiceOverStudio`.
 2. In Settings, choose the computer tier and run **1-Click Auto Setup**, or point the app at an existing GGUF and Qwen repo.
-3. Add paragraphs, choose Qwen voice presets, and adjust speed or gaps.
+3. Add paragraphs, choose Qwen voice presets, and adjust speed, pitch, or gaps.
 4. Optionally run **Improve** or **Rephrase** with the local LLM.
-5. Generate paragraph audio, preview it, then export the final sequence.
+5. Optionally enroll a **Reference Voice** from a short recording; use **Clean and Save** if the room or microphone input is noisy.
+6. Generate paragraph audio, preview it, then export the final sequence.
 
 ## Models
 - Default LLM downloads live under `~/Library/vos2026/llm`.
@@ -119,4 +123,5 @@ Use `./Scripts/build-app-bundle.sh` when you need to test microphone permissions
 - If `xcrun metal` or `xcrun metallib` is missing, open Xcode once and make sure the full Xcode app is selected with `xcode-select -p`.
 - If the app fails to link, rebuild llama.cpp so `ThirdParty/llama.cpp/build` contains the static archives expected by `Package.swift`.
 - If TTS initialization fails, verify the configured Hugging Face repo exists and that the machine has enough unified memory for the selected Qwen model tier.
+- Reference voice quality is driven heavily by the recorded sample; `Clean and Save` helps with room noise, while the built-in loudness normalization helps keep generated paragraph volume more consistent across runs.
 - The current `mlx-audio-swift` dependency emits README resource warnings during `swift build`; they are upstream package warnings and do not block the app build.

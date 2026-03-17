@@ -28,9 +28,9 @@ struct Paragraph: Identifiable, Codable {
 
         var rate: Float {
             switch self {
-            case .slow: return 0.85
+            case .slow: return 0.9
             case .normal: return 1.0
-            case .fast: return 1.2
+            case .fast: return 1.12
             }
         }
     }
@@ -105,8 +105,8 @@ struct Paragraph: Identifiable, Codable {
         if let preset = try? container.decodeIfPresent(SpeedPreset.self, forKey: .speed) {
             speed = preset
         } else if let numericSpeed = try? container.decodeIfPresent(Float.self, forKey: .speed) {
-            if numericSpeed <= 0.9 { speed = .slow }
-            else if numericSpeed >= 1.1 { speed = .fast }
+            if numericSpeed <= 0.95 { speed = .slow }
+            else if numericSpeed >= 1.06 { speed = .fast }
             else { speed = .normal }
         } else {
             speed = .normal

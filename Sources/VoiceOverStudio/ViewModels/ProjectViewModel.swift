@@ -39,6 +39,7 @@ On Tuesday morning, Maya counted four blue lanterns near the station and said th
     @Published var referenceVoiceScript: String = ProjectViewModel.defaultReferenceVoiceScript
     @Published var isGeneratingReferenceVoiceScript = false
     @Published var isRecordingReferenceVoice = false
+    @Published var isCleaningReferenceVoice = false
     @Published var referenceVoiceEnrollmentStatus: String = "No reference voice enrolled."
     @Published var isPreparingReferenceVoiceModel = false
     @Published var voiceConfigurations: [VoiceConfiguration] = []
@@ -55,6 +56,7 @@ On Tuesday morning, Maya counted four blue lanterns near the station and said th
     private let llmService = LLMService()
     private let modelUpdater = ModelUpdaterService()
     private let referenceVoiceRecorder = ReferenceVoiceRecorder()
+    private let referenceVoiceEnhancementService = ReferenceVoiceEnhancementService()
     private let abcJingleService = ABCJingleService()
 
     private let llmDefaultFilename = "Llama-3.2-1B-Instruct-Q4_K_M.gguf"
@@ -961,6 +963,67 @@ On Tuesday morning, Maya counted four blue lanterns near the station and said th
             return
         }
 
+        persistReferenceVoiceProfile(transcript: transcript, summary: summary, cleanedWithEnhancement: false)
+    }
+
+    func cleanAndSaveReferenceVoiceProfile() async {
+        let transcript = referenceVoiceScript.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !transcript.isEmpty else {
+            referenceVoiceEnrollmentStatus = "Add or generate a reference script first."
+            return
+        }
+        guard FileManager.default.fileExists(atPath: referenceVoiceRecordingURL.path) else {
+            referenceVoiceEnrollmentStatus = "Record a reference sample before cleaning and saving."
+            return
+        }
+
+        isCleaningReferenceVoice = true
+        isProcessing = true
+        referenceVoiceEnrollmentStatus = "Loading speech cleanup model..."
+        statusMessage = "Preparing speech cleanup..."
+        defer {
+            isCleaningReferenceVoice = false
+            isProcessing = false
+        }
+
+        let cleanedURL = referenceVoiceDirectoryURL.appendingPathComponent("reference-voice.cleaned.wav", isDirectory: false)
+        do {
+            try FileManager.default.createDirectory(at: referenceVoiceDirectoryURL, withIntermediateDirectories: true)
+            if FileManager.default.fileExists(atPath: cleanedURL.path) {
+                try FileManager.default.removeItem(at: cleanedURL)
+            }
+
+            referenceVoiceEnrollmentStatus = "Cleaning background noise from the recording..."
+            try await referenceVoiceEnhancementService.enhanceRecording(
+                at: referenceVoiceRecordingURL,
+                outputURL: cleanedURL
+            )
+
+            referenceVoiceEnrollmentStatus = "Finalizing cleaned sample..."
+            let summary = try referenceVoiceRecorder.finalizeRecording(
+                at: cleanedURL,
+                targetSampleRate: ttsService.sampleRate
+            )
+
+            if FileManager.default.fileExists(atPath: referenceVoiceRecordingURL.path) {
+                try FileManager.default.removeItem(at: referenceVoiceRecordingURL)
+            }
+            try FileManager.default.moveItem(at: cleanedURL, to: referenceVoiceRecordingURL)
+
+            persistReferenceVoiceProfile(transcript: transcript, summary: summary, cleanedWithEnhancement: true)
+        } catch {
+            try? FileManager.default.removeItem(at: cleanedURL)
+            referenceVoiceEnrollmentStatus = "Failed to clean reference voice: \(error.localizedDescription)"
+            statusMessage = "Reference Voice cleanup failed: \(error.localizedDescription)"
+        }
+    }
+
+    private func persistReferenceVoiceProfile(
+        transcript: String,
+        summary: ReferenceVoiceRecorder.RecordingSummary,
+        cleanedWithEnhancement: Bool
+    ) {
+
         let profile = ReferenceVoiceProfile(
             transcript: transcript,
             audioPath: referenceVoiceRecordingURL.path
@@ -977,7 +1040,8 @@ On Tuesday morning, Maya counted four blue lanterns near the station and said th
                 ? ""
                 : " Switch Qwen to a VoiceDesign repo for better cloning quality."
             let silenceNote = summary.trimmedSilence ? " Leading/trailing silence removed." : ""
-            referenceVoiceEnrollmentStatus = "Reference Voice saved (\(durationText)s cleaned sample).\(silenceNote)\(guidance)"
+            let cleanupNote = cleanedWithEnhancement ? " Background noise reduced." : ""
+            referenceVoiceEnrollmentStatus = "Reference Voice saved (\(durationText)s cleaned sample).\(silenceNote)\(cleanupNote)\(guidance)"
             statusMessage = "Reference Voice enrolled."
         } catch {
             referenceVoiceEnrollmentStatus = "Failed to save reference voice: \(error.localizedDescription)"

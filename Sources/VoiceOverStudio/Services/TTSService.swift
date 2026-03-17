@@ -139,7 +139,7 @@ class TTSService: ObservableObject {
             : Self.composeVoicePrompt(configuration: voiceConfiguration ?? VoiceConfiguration.builtInDefault(for: voiceID))
         let referenceVoiceURL = referenceVoiceProfile.map { URL(fileURLWithPath: $0.audioPath) }
         let referenceTranscript = referenceVoiceProfile?.transcript
-        let clampedSpeed = max(0.5, min(speed, 2.0))
+        let clampedSpeed = max(0.9, min(speed, 1.12))
 
         let result = await Task.detached(priority: .userInitiated) { () -> Bool in
             do {
@@ -182,18 +182,24 @@ class TTSService: ObservableObject {
 
                 try AudioUtils.writeWavFile(
                     samples: samples,
-                    sampleRate: Double(modelBox.value.sampleRate) * Double(clampedSpeed),
+                    sampleRate: Double(modelBox.value.sampleRate),
                     fileURL: URL(fileURLWithPath: outputFile)
                 )
                 debugLog("DEBUG:: [TTS]   wrote \(samples.count) samples → \(outputFile)")
 
-                if pitchSemitones != 0.0 {
-                    try AudioPostProcessor.applyPitch(
+                if clampedSpeed != 1.0 || pitchSemitones != 0.0 {
+                    try AudioPostProcessor.applyTempoAndPitch(
+                        rate: clampedSpeed,
                         semitones: pitchSemitones,
                         fileURL: URL(fileURLWithPath: outputFile)
                     )
-                    debugLog("DEBUG:: [TTS]   applied pitch shift: \(pitchSemitones) semitones")
+                    debugLog("DEBUG:: [TTS]   applied tempo/pitch: rate=\(clampedSpeed), pitch=\(pitchSemitones) semitones")
                 }
+
+                try AudioPostProcessor.normalizeSpeechLevel(
+                    fileURL: URL(fileURLWithPath: outputFile)
+                )
+                debugLog("DEBUG:: [TTS]   normalized speech level")
 
                 return true
             } catch {
