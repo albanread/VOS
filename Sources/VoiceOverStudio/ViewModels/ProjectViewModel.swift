@@ -57,7 +57,7 @@ On Tuesday morning, Maya counted four blue lanterns near the station and said th
     private let modelUpdater = ModelUpdaterService()
     private let referenceVoiceRecorder = ReferenceVoiceRecorder()
     private let referenceVoiceEnhancementService = ReferenceVoiceEnhancementService()
-    private let abcJingleService = ABCJingleService()
+    let abcJingleService = ABCJingleService()
 
     private let llmDefaultFilename = "Llama-3.2-1B-Instruct-Q4_K_M.gguf"
     
@@ -186,7 +186,7 @@ On Tuesday morning, Maya counted four blue lanterns near the station and said th
         rootModelsURL.appendingPathComponent("downloads", isDirectory: true)
     }
 
-    private var documentsURL: URL {
+    var documentsURL: URL {
         FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Documents", isDirectory: true)
     }
 
@@ -214,7 +214,7 @@ On Tuesday morning, Maya counted four blue lanterns near the station and said th
         rootModelsURL.appendingPathComponent("jingle-timeline.json", isDirectory: false)
     }
 
-    private var jingleCacheDirectoryURL: URL {
+    var jingleCacheDirectoryURL: URL {
         rootModelsURL.appendingPathComponent("jingles", isDirectory: true)
     }
 
@@ -642,7 +642,7 @@ On Tuesday morning, Maya counted four blue lanterns near the station and said th
         }
     }
 
-    private func writeJingleMIDIDiagnostics(result: ABCJingleRenderResult, midiURL: URL) throws {
+    func writeJingleMIDIDiagnostics(result: ABCJingleRenderResult, midiURL: URL) throws {
         let reportURL = midiURL.deletingPathExtension().appendingPathExtension("debug.txt")
         let report = abcJingleService.diagnosticReport(for: result)
         try report.write(to: reportURL, atomically: true, encoding: .utf8)
@@ -714,7 +714,7 @@ On Tuesday morning, Maya counted four blue lanterns near the station and said th
         }
     }
 
-    private func initializeEngines(managesProcessingState: Bool) async {
+    func initializeEngines(managesProcessingState: Bool) async {
         if managesProcessingState, isProcessing {
             return
         }
@@ -1580,7 +1580,7 @@ On Tuesday morning, Maya counted four blue lanterns near the station and said th
         }
     }
 
-    private func buildFullSequenceExportSegments() throws -> [(url: URL, gapAfter: Double)] {
+    func buildFullSequenceExportSegments() throws -> [(url: URL, gapAfter: Double)] {
         var segments: [(url: URL, gapAfter: Double)] = []
         var renderedJingleAudio: [UUID: URL] = [:]
 
@@ -1619,7 +1619,7 @@ On Tuesday morning, Maya counted four blue lanterns near the station and said th
         return audioURL
     }
 
-    private func remapParagraphVoicesIfNeeded() {
+    func remapParagraphVoicesIfNeeded() {
         let validVoiceIDs = Set(voiceOptions.map(\ .id))
         let defaultVoiceID = defaultVoiceConfigurationID()
         paragraphs = paragraphs.map { paragraph in
@@ -1632,7 +1632,7 @@ On Tuesday morning, Maya counted four blue lanterns near the station and said th
         }
     }
 
-    private func normalizeJingleTimelineItems() {
+    func normalizeJingleTimelineItems() {
         let validParagraphIDs = Set(paragraphs.map(\.id))
         let validJingleIDs = Set(jingleCards.map(\.id))
         jingleTimelineItems = jingleTimelineItems.compactMap { item in

@@ -54,6 +54,16 @@ if [[ -f "$ICON_SOURCE" ]]; then
   cp "$ICON_SOURCE" "$RESOURCES_DIR/VoiceOverStudio.icns"
 fi
 
+# AppleScript terminology. Must sit beside Info.plist's OSAScriptingDefinition
+# value or the app reports "not scriptable" to osascript.
+SDEF_SOURCE="$REPO_ROOT/Packaging/$APP_NAME.sdef"
+if [[ -f "$SDEF_SOURCE" ]]; then
+  cp "$SDEF_SOURCE" "$RESOURCES_DIR/$APP_NAME.sdef"
+else
+  echo "Missing scripting definition at $SDEF_SOURCE" >&2
+  exit 1
+fi
+
 if command -v codesign >/dev/null 2>&1; then
   codesign --force --deep --sign - --timestamp=none "$APP_BUNDLE" >/dev/null 2>&1 || true
 fi

@@ -1,0 +1,370 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE dictionary SYSTEM "file://localhost/System/Library/DTDs/sdef.dtd">
+<!--
+  Terminology notes, learned the hard way:
+  - A verb must not end in a class noun ("add paragraph" parses as verb+noun),
+    must not begin with a reserved word (add, at, get, set, move, copy, make),
+    and parameter names must avoid reserved words ("at", "to index").
+  - Commands whose direct parameter is an object specifier dispatch OBJECT-FIRST:
+    the receiving class must declare <responds-to> with a real <cocoa method>,
+    implemented on the element class. There is no fallback to the command class.
+  - Commands without a direct parameter dispatch to the command's <cocoa class>
+    performDefaultImplementation.
+-->
+<dictionary title="VoiceOverStudio Terminology">
+
+    <suite name="Standard Suite" code="????" description="Common classes and commands for all applications.">
+        <command name="quit" code="aevtquit" description="Quit the application.">
+            <cocoa class="NSQuitCommand"/>
+        </command>
+
+        <command name="count" code="corecnte" description="Return the number of elements of an object.">
+            <cocoa class="NSCountCommand"/>
+            <direct-parameter type="specifier" description="The objects to be counted."/>
+            <result type="integer" description="The count."/>
+        </command>
+
+        <command name="exists" code="coredoex" description="Verify that an object exists.">
+            <cocoa class="NSExistsCommand"/>
+            <direct-parameter type="any" description="The object in question."/>
+            <result type="boolean" description="Whether it exists."/>
+        </command>
+
+        <command name="delete" code="coredelo" description="Delete an object.">
+            <cocoa class="NSDeleteCommand"/>
+            <direct-parameter type="specifier" description="The object to delete."/>
+        </command>
+    </suite>
+
+    <suite name="VoiceOverStudio Suite" code="VOSS" description="Classes and commands for driving VoiceOverStudio.">
+
+        <enumeration name="compute tier" code="Etie">
+            <enumerator name="small" code="Etsm" description="M1 class, 8-16GB."/>
+            <enumerator name="medium" code="Etmd" description="M1 Pro/Max, M2/M3 Pro."/>
+            <enumerator name="high" code="Ethi" description="M2 Ultra / M3 Ultra."/>
+        </enumeration>
+
+        <enumeration name="export format" code="Eefm">
+            <enumerator name="M4A" code="Efm4" description="AAC in an M4A container."/>
+            <enumerator name="WAV" code="Efwv" description="Uncompressed WAV."/>
+        </enumeration>
+
+        <enumeration name="speed setting" code="Espd">
+            <enumerator name="slow" code="Espl" description="Slower delivery."/>
+            <enumerator name="normal" code="Espn" description="Unmodified delivery."/>
+            <enumerator name="fast" code="Espf" description="Faster delivery."/>
+        </enumeration>
+
+        <enumeration name="pitch setting" code="Epit">
+            <enumerator name="deeper" code="Epdp" description="Two semitones down."/>
+            <enumerator name="normal" code="Epnm" description="Unmodified pitch."/>
+            <enumerator name="brighter" code="Epbr" description="Two semitones up."/>
+        </enumeration>
+
+        <class name="application" code="capp" description="The VoiceOverStudio application.">
+            <cocoa class="NSApplication"/>
+
+            <element type="narration">
+                <cocoa key="scriptParagraphs"/>
+            </element>
+            <element type="voice" access="r">
+                <cocoa key="scriptVoices"/>
+            </element>
+            <element type="jingle" access="r">
+                <cocoa key="scriptJingles"/>
+            </element>
+
+            <property name="name" code="pnam" type="text" access="r" description="The name of the application.">
+                <cocoa key="scriptApplicationName"/>
+            </property>
+            <property name="status" code="pSta" type="text" access="r" description="The current status message shown in the app.">
+                <cocoa key="scriptStatus"/>
+            </property>
+            <property name="busy" code="pBsy" type="boolean" access="r" description="True while the app is generating, exporting, or downloading.">
+                <cocoa key="scriptBusy"/>
+            </property>
+            <property name="speech ready" code="pTTS" type="boolean" access="r" description="True when the Qwen TTS engine is loaded.">
+                <cocoa key="scriptTTSReady"/>
+            </property>
+            <property name="language model ready" code="pLLM" type="boolean" access="r" description="True when the llama.cpp model is loaded.">
+                <cocoa key="scriptLLMReady"/>
+            </property>
+            <property name="compute tier" code="pTie" type="compute tier" description="The machine tier used to pick recommended models.">
+                <cocoa key="scriptComputeTier"/>
+            </property>
+            <property name="speech model repository" code="pTRp" type="text" description="The Hugging Face repo id for the Qwen TTS model.">
+                <cocoa key="scriptTTSModelRepo"/>
+            </property>
+            <property name="language model path" code="pLPa" type="text" description="Filesystem path to the GGUF model used for text polishing.">
+                <cocoa key="scriptLLMModelPath"/>
+            </property>
+            <property name="default gap" code="pDGp" type="real" description="Default silence in seconds inserted after each new paragraph.">
+                <cocoa key="scriptDefaultGap"/>
+            </property>
+            <property name="export format" code="pEFm" type="export format" description="Container used when exporting the stitched sequence.">
+                <cocoa key="scriptExportFormat"/>
+            </property>
+            <property name="reference voice enrolled" code="pRVe" type="boolean" access="r" description="True when a reference voice profile exists.">
+                <cocoa key="scriptReferenceVoiceEnrolled"/>
+            </property>
+            <property name="setup progress" code="pSPr" type="real" access="r" description="Model download progress from 0.0 to 1.0.">
+                <cocoa key="scriptSetupProgress"/>
+            </property>
+            <property name="setup narrative" code="pSNa" type="text" access="r" description="Human-readable description of the current setup step.">
+                <cocoa key="scriptSetupNarrative"/>
+            </property>
+            <property name="build stamp" code="pBst" type="text" access="r" description="Launch timestamp and process id, for checking that a fresh binary is running.">
+                <cocoa key="scriptBuildStamp"/>
+            </property>
+        </class>
+
+        <class name="narration" code="Para" description="One block of narration in the project." plural="narrations">
+            <cocoa class="VOSScriptParagraph"/>
+            <property name="id" code="ID  " type="text" access="r" description="Unique identifier of the paragraph.">
+                <cocoa key="scriptUniqueID"/>
+            </property>
+            <property name="position" code="pPos" type="integer" access="r" description="Position of the paragraph in the project, starting at 1.">
+                <cocoa key="scriptIndex"/>
+            </property>
+            <property name="text" code="pTxt" type="text" description="The narration text.">
+                <cocoa key="scriptText"/>
+            </property>
+            <property name="voice" code="pVid" type="text" description="Identifier of the voice preset used for this paragraph.">
+                <cocoa key="scriptVoiceID"/>
+            </property>
+            <property name="speed" code="pSpd" type="speed setting" description="Delivery speed preset.">
+                <cocoa key="scriptSpeed"/>
+            </property>
+            <property name="pitch" code="pPit" type="pitch setting" description="Pitch preset.">
+                <cocoa key="scriptPitch"/>
+            </property>
+            <property name="gap" code="pGap" type="real" description="Seconds of silence after this paragraph.">
+                <cocoa key="scriptGap"/>
+            </property>
+            <property name="output name" code="pOFn" type="text" description="Filename used for this paragraph's generated audio.">
+                <cocoa key="scriptOutputFilename"/>
+            </property>
+            <property name="audio path" code="pAPa" type="text" access="r" description="Path to the generated audio, or empty if not yet generated.">
+                <cocoa key="scriptAudioPath"/>
+            </property>
+            <property name="generated" code="pGen" type="boolean" access="r" description="True when audio exists for this paragraph.">
+                <cocoa key="scriptGenerated"/>
+            </property>
+            <property name="generating" code="pIsG" type="boolean" access="r" description="True while this paragraph is being synthesized.">
+                <cocoa key="scriptGenerating"/>
+            </property>
+
+            <responds-to command="synthesize">
+                <cocoa method="handleSynthesizeCommand:"/>
+            </responds-to>
+            <responds-to command="polish">
+                <cocoa method="handlePolishCommand:"/>
+            </responds-to>
+            <responds-to command="rephrase">
+                <cocoa method="handleRephraseCommand:"/>
+            </responds-to>
+            <responds-to command="preview">
+                <cocoa method="handlePreviewCommand:"/>
+            </responds-to>
+            <responds-to command="replicate">
+                <cocoa method="handleReplicateCommand:"/>
+            </responds-to>
+            <responds-to command="relocate">
+                <cocoa method="handleRelocateCommand:"/>
+            </responds-to>
+        </class>
+
+        <class name="voice" code="Voic" description="An available voice preset." plural="voices">
+            <cocoa class="VOSScriptVoice"/>
+            <property name="id" code="ID  " type="text" access="r" description="Identifier used by a paragraph's voice property.">
+                <cocoa key="scriptUniqueID"/>
+            </property>
+            <property name="name" code="pnam" type="text" access="r" description="Display name of the voice.">
+                <cocoa key="scriptName"/>
+            </property>
+            <property name="prompt" code="pPmt" type="text" access="r" description="The prompt text handed to the TTS model for this voice.">
+                <cocoa key="scriptPrompt"/>
+            </property>
+        </class>
+
+        <class name="jingle" code="Jing" description="A reusable ABC music cue." plural="jingles">
+            <cocoa class="VOSScriptJingle"/>
+            <property name="id" code="ID  " type="text" access="r" description="Unique identifier of the jingle card.">
+                <cocoa key="scriptUniqueID"/>
+            </property>
+            <property name="name" code="pnam" type="text" description="Display name of the jingle.">
+                <cocoa key="scriptName"/>
+            </property>
+            <property name="role" code="pRol" type="text" access="r" description="Cue role: intro, transition, bumper, outro, or emphasisSting.">
+                <cocoa key="scriptRole"/>
+            </property>
+            <property name="abc source" code="pABC" type="text" description="The ABC notation source for this cue.">
+                <cocoa key="scriptABCSource"/>
+            </property>
+            <property name="target duration" code="pTDu" type="real" description="Intended length of the cue in seconds.">
+                <cocoa key="scriptTargetDuration"/>
+            </property>
+            <property name="speech safety" code="pSfy" type="text" access="r" description="Whether the cue is safe under speech: safe, review, or risky.">
+                <cocoa key="scriptSpeechSafety"/>
+            </property>
+
+            <responds-to command="verify">
+                <cocoa method="handleVerifyCommand:"/>
+            </responds-to>
+            <responds-to command="render midi">
+                <cocoa method="handleRenderMIDICommand:"/>
+            </responds-to>
+            <responds-to command="preview">
+                <cocoa method="handlePreviewCommand:"/>
+            </responds-to>
+        </class>
+
+        <!-- Application-targeted commands: no direct parameter, dispatched to the
+             command class's performDefaultImplementation. -->
+
+        <command name="initialize engines" code="VOSSinit" description="Load the TTS and language models. Waits until loading finishes.">
+            <cocoa class="VOSInitializeEnginesCommand"/>
+            <result type="text" description="The status message after initialization."/>
+        </command>
+
+        <command name="auto setup" code="VOSSauto" description="Download and configure recommended models for the current compute tier. Waits until finished.">
+            <cocoa class="VOSAutoSetupCommand"/>
+            <result type="text" description="The status message after setup."/>
+        </command>
+
+        <command name="create narration" code="VOSSaddp" description="Append a new paragraph. Returns its position.">
+            <cocoa class="VOSCreateNarrationCommand"/>
+            <parameter name="script" code="kTxt" type="text" optional="yes" description="Initial narration text.">
+                <cocoa key="WithText"/>
+            </parameter>
+            <parameter name="speaker" code="kVce" type="text" optional="yes" description="Voice preset identifier.">
+                <cocoa key="WithVoice"/>
+            </parameter>
+            <result type="integer" description="Position of the paragraph that was added."/>
+        </command>
+
+        <command name="create cue" code="VOSSajng" description="Create a jingle card, optionally from a built-in preset. Returns its position.">
+            <cocoa class="VOSCreateCueCommand"/>
+            <parameter name="preset" code="kPre" type="text" optional="yes" description="Preset id: podcast_intro, soft_transition, news_sting, or uplift_tag.">
+                <cocoa key="FromPreset"/>
+            </parameter>
+            <result type="integer" description="Position of the jingle that was added."/>
+        </command>
+
+        <command name="generate all" code="VOSSgnal" description="Synthesize audio for every paragraph. Waits until all are finished.">
+            <cocoa class="VOSGenerateAllCommand"/>
+            <result type="text" description="The status message after generation."/>
+        </command>
+
+        <command name="stop playback" code="VOSSstop" description="Stop any audio currently playing.">
+            <cocoa class="VOSStopPlaybackCommand"/>
+        </command>
+
+        <command name="export sequence" code="VOSSexps" description="Stitch all generated paragraphs with their gaps and write one file.">
+            <cocoa class="VOSExportSequenceCommand"/>
+            <parameter name="to" code="kPth" type="text" description="Destination file path.">
+                <cocoa key="ToPath"/>
+            </parameter>
+            <result type="text" description="The path that was written."/>
+        </command>
+
+        <command name="save transcript" code="VOSSsavt" description="Write the project transcript as JSON.">
+            <cocoa class="VOSSaveTranscriptCommand"/>
+            <parameter name="to" code="kPth" type="text" description="Destination file path.">
+                <cocoa key="ToPath"/>
+            </parameter>
+            <result type="text" description="The path that was written."/>
+        </command>
+
+        <command name="load transcript" code="VOSSldtr" description="Replace the current project with a transcript JSON file.">
+            <cocoa class="VOSLoadTranscriptCommand"/>
+            <parameter name="from" code="kPth" type="text" description="Source file path.">
+                <cocoa key="FromPath"/>
+            </parameter>
+            <result type="integer" description="The number of paragraphs loaded."/>
+        </command>
+
+        <command name="capture screenshot" code="VOSSscrn" description="Write a PNG of the app's own window. Does not require screen recording permission.">
+            <cocoa class="VOSCaptureScreenshotCommand"/>
+            <parameter name="to" code="kPth" type="text" optional="yes" description="Destination PNG path. Defaults to a timestamped file in the temporary directory.">
+                <cocoa key="ToPath"/>
+            </parameter>
+            <result type="text" description="The path of the written PNG."/>
+        </command>
+
+        <command name="menu items" code="VOSSmnui" description="List every scriptable action name that perform action accepts.">
+            <cocoa class="VOSMenuItemsCommand"/>
+            <result type="list of text" description="The available action names."/>
+        </command>
+
+        <command name="perform action" code="VOSSpact" description="Invoke a named action from the menu surface.">
+            <cocoa class="VOSPerformActionCommand"/>
+            <direct-parameter type="text" description="The action name, as returned by menu items."/>
+            <result type="text" description="The status message after the action ran."/>
+        </command>
+
+        <command name="discard" code="VOSSdisc" description="Delete a narration by position. (The Standard Suite delete command does not reach this application's element storage.)">
+            <cocoa class="VOSDiscardCommand"/>
+            <parameter name="slot" code="kSlt" type="integer" description="1-based position of the narration to delete.">
+                <cocoa key="Slot"/>
+            </parameter>
+            <result type="integer" description="The number of narrations remaining."/>
+        </command>
+
+        <command name="wait until idle" code="VOSSwait" description="Block until the app is not busy, or until the timeout elapses.">
+            <cocoa class="VOSWaitUntilIdleCommand"/>
+            <parameter name="timeout" code="kTmo" type="real" optional="yes" description="Maximum seconds to wait. Defaults to 300.">
+                <cocoa key="Timeout"/>
+            </parameter>
+            <result type="boolean" description="True if the app became idle, false if the timeout elapsed."/>
+        </command>
+
+        <!-- Element-targeted commands: the direct parameter is a paragraph or
+             jingle specifier; dispatch goes to the handler methods declared in
+             responds-to on those classes. -->
+
+        <command name="synthesize" code="VOSSgena" description="Synthesize audio for a paragraph. Waits until generation finishes.">
+            <direct-parameter type="specifier" description="The paragraph to synthesize."/>
+            <result type="text" description="Path to the generated audio file."/>
+        </command>
+
+        <command name="polish" code="VOSSimpr" description="Rewrite numbers and abbreviations into spoken form using the local language model.">
+            <direct-parameter type="specifier" description="The paragraph to polish."/>
+            <result type="text" description="The polished text."/>
+        </command>
+
+        <command name="rephrase" code="VOSSreph" description="Rephrase a paragraph for spoken clarity using the local language model.">
+            <direct-parameter type="specifier" description="The paragraph to rephrase."/>
+            <result type="text" description="The rephrased text."/>
+        </command>
+
+        <command name="preview" code="VOSSplay" description="Play a paragraph's generated audio, or a jingle as MIDI.">
+            <direct-parameter type="specifier" description="The paragraph or jingle to play."/>
+        </command>
+
+        <command name="replicate" code="VOSSdupp" description="Duplicate a paragraph in place. Returns the new paragraph's position.">
+            <direct-parameter type="specifier" description="The paragraph to duplicate."/>
+            <result type="integer" description="Position of the new paragraph."/>
+        </command>
+
+        <command name="relocate" code="VOSSmovp" description="Move a paragraph to a new position.">
+            <direct-parameter type="specifier" description="The paragraph to move."/>
+            <parameter name="destination" code="kPos" type="integer" description="Destination position, starting at 1.">
+                <cocoa key="Destination"/>
+            </parameter>
+        </command>
+
+        <command name="verify" code="VOSSvjng" description="Parse a jingle's ABC source and report problems.">
+            <direct-parameter type="specifier" description="The jingle to verify."/>
+            <result type="text" description="The validation report."/>
+        </command>
+
+        <command name="render midi" code="VOSSejng" description="Render a jingle to a MIDI file.">
+            <direct-parameter type="specifier" description="The jingle to render."/>
+            <parameter name="to" code="kPth" type="text" description="Destination MIDI path.">
+                <cocoa key="ToPath"/>
+            </parameter>
+            <result type="text" description="The path that was written."/>
+        </command>
+    </suite>
+</dictionary>

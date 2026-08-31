@@ -105,6 +105,14 @@ swift run VoiceOverStudio
 
 Use `./Scripts/build-app-bundle.sh` when you need to test microphone permissions or app-bundle behavior.
 
+## Scripting and agent control
+The app is fully scriptable over Apple Events: every property, element, and
+workflow (create, polish, synthesize, export, screenshots, the named menu
+surface) is reachable from AppleScript/`osascript`. See
+[docs/SCRIPTING.md](docs/SCRIPTING.md). `./Scripts/relaunch-scripting.sh`
+launches a verified-fresh scriptable instance and
+`./Scripts/scripting-smoke.sh` exercises the whole surface.
+
 ## Using the app
 1. Launch `VoiceOverStudio`.
 2. In Settings, choose the computer tier and run **1-Click Auto Setup**, or point the app at an existing GGUF and Qwen repo.
