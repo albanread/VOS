@@ -344,14 +344,32 @@ struct JingleLibrarySheet: View {
     @EnvironmentObject private var viewModel: ProjectViewModel
 
     var body: some View {
-        HStack(spacing: 0) {
-            VStack(alignment: .leading, spacing: 10) {
-                HStack {
-                    Text("Jingle Cards")
-                        .font(.title3)
-                        .fontWeight(.bold)
-                    Spacer()
-                    Menu("Add") {
+        NavigationSplitView {
+            List(selection: Binding(
+                get: { viewModel.selectedJingleCardID },
+                set: { viewModel.selectJingleCard($0) }
+            )) {
+                ForEach(viewModel.jingleCards) { card in
+                    HStack(spacing: 8) {
+                        Image(systemName: "music.note")
+                            .foregroundStyle(.orange)
+                            .frame(width: 16)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(card.name.isEmpty ? "Untitled Jingle" : card.name)
+                            Text(card.promptSpec.cueRole.description)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        SpeechSafetyBadge(safety: card.speechSafety, compact: true)
+                    }
+                    .tag(card.id)
+                }
+            }
+            .navigationSplitViewColumnWidth(min: 220, ideal: 250, max: 300)
+            .toolbar {
+                ToolbarItemGroup {
+                    Menu {
                         ForEach(ABCJinglePreset.builtIn) { preset in
                             Button(preset.name) {
                                 viewModel.addJingleCard(from: preset)
@@ -361,52 +379,78 @@ struct JingleLibrarySheet: View {
                         Button("Blank Jingle") {
                             viewModel.addJingleCard(from: nil)
                         }
+                    } label: {
+                        Label("Add", systemImage: "plus")
                     }
-                }
+                    .help("Add a jingle from a preset or start blank")
 
-                List(selection: Binding(get: {
-                    viewModel.selectedJingleCardID
-                }, set: { newValue in
-                    viewModel.selectJingleCard(newValue)
-                })) {
-                    ForEach(viewModel.jingleCards) { card in
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text(card.name)
-                            Text(card.promptSpec.cueRole.description)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                        .tag(card.id)
-                    }
-                }
-
-                HStack {
                     if let selectedID = viewModel.selectedJingleCardID {
-                        Button("Duplicate") {
+                        Button {
                             viewModel.duplicateJingleCard(selectedID)
+                        } label: {
+                            Label("Duplicate", systemImage: "plus.square.on.square")
                         }
-                        Button("Remove") {
+                        .help("Duplicate the selected jingle")
+
+                        Button(role: .destructive) {
                             viewModel.removeJingleCard(selectedID)
+                        } label: {
+                            Label("Remove", systemImage: "trash")
                         }
+                        .help("Remove the selected jingle")
                     }
                 }
-                .controlSize(.small)
             }
-            .frame(width: 240)
-            .padding(16)
-
-            Divider()
-
-            Group {
-                if let index = viewModel.activeJingleCardIndex {
-                    JingleCardEditor(card: $viewModel.jingleCards[index])
-                } else {
-                    ContentUnavailableView("No Jingle Selected", systemImage: "music.note")
+        } detail: {
+            if let selectedID = viewModel.selectedJingleCardID,
+               viewModel.jingleCards.contains(where: { $0.id == selectedID }) {
+                JingleCardEditor(card: viewModel.jingleCardBinding(selectedID))
+            } else {
+                ContentUnavailableView(
+                    "No Jingle Selected",
+                    systemImage: "music.note",
+                    description: Text("Select a jingle, or add one from a preset.")
+                )
+            }
+        }
+        .frame(minWidth: 940, minHeight: 600)
+        .toolbar {
+            ToolbarItem(placement: .confirmationAction) {
+                Button("Done") {
+                    viewModel.isJingleLibrarySheetPresented = false
                 }
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .frame(minWidth: 900, minHeight: 580)
+    }
+}
+
+struct SpeechSafetyBadge: View {
+    let safety: ABCJingleSpeechSafety
+    var compact = false
+
+    private var color: Color {
+        switch safety {
+        case .safe: return .green
+        case .review: return .orange
+        case .risky: return .red
+        }
+    }
+
+    var body: some View {
+        if compact {
+            Circle()
+                .fill(color)
+                .frame(width: 8, height: 8)
+                .help("Speech safety: \(safety.rawValue.capitalized)")
+        } else {
+            Text(safety.rawValue.capitalized)
+                .font(.caption2.weight(.medium))
+                .foregroundStyle(color)
+                .padding(.horizontal, 7)
+                .padding(.vertical, 2)
+                .background(color.opacity(0.14), in: Capsule())
+                .help("How safely this cue sits under speech")
+        }
     }
 }
 
@@ -422,96 +466,150 @@ struct JingleCardEditor: View {
     }
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 14) {
-                VStack(alignment: .leading, spacing: 10) {
-                    HStack(alignment: .center, spacing: 12) {
-                        TextField("Jingle name", text: $card.name)
-                            .textFieldStyle(.roundedBorder)
+        VStack(alignment: .leading, spacing: 0) {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 10) {
+                        GridRow {
+                            fieldLabel("Name")
+                            TextField("Jingle name", text: $card.name)
+                                .textFieldStyle(.roundedBorder)
+                                .gridCellColumns(3)
+                        }
+                        GridRow {
+                            fieldLabel("Role")
+                            Picker("Role", selection: $card.promptSpec.cueRole) {
+                                ForEach(ABCJingleCueRole.allCases, id: \.self) { role in
+                                    Text(role.description).tag(role)
+                                }
+                            }
+                            .labelsHidden()
+                            .frame(maxWidth: 180)
 
-                        TextField("Category", text: $card.category)
-                            .textFieldStyle(.roundedBorder)
-                            .frame(width: 160)
-
-                        Picker("Role", selection: $card.promptSpec.cueRole) {
-                            ForEach(ABCJingleCueRole.allCases, id: \.self) { role in
-                                Text(role.description).tag(role)
+                            fieldLabel("Target length")
+                            HStack(spacing: 4) {
+                                TextField("2.0", value: $card.promptSpec.targetDurationSeconds, format: .number)
+                                    .textFieldStyle(.roundedBorder)
+                                    .frame(width: 64)
+                                Text("sec").font(.caption).foregroundStyle(.secondary)
                             }
                         }
-                        .frame(width: 180)
-
-                        Text("Seconds")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        TextField("2.0", value: $card.promptSpec.targetDurationSeconds, format: .number)
-                            .textFieldStyle(.roundedBorder)
-                            .frame(width: 72)
-                    }
-
-                    HStack(alignment: .center, spacing: 12) {
-                        TextField("Template notes", text: $card.promptSpec.promptText)
-                            .textFieldStyle(.roundedBorder)
-                        TextField("Style tags", text: styleTagsText)
-                            .textFieldStyle(.roundedBorder)
-                            .frame(minWidth: 220)
-                        Text("Speech safety: \(card.speechSafety.rawValue.capitalized)")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-                .padding(12)
-                .background(Color(NSColor.controlBackgroundColor))
-                .cornerRadius(10)
-
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("Editable ABC")
-                        .font(.headline)
-                    TextEditor(text: $card.abcSource)
-                        .font(.system(.body, design: .monospaced))
-                        .frame(minHeight: 320)
-                        .padding(6)
-                        .background(Color(NSColor.textBackgroundColor))
-                        .cornerRadius(6)
-                }
-
-                HStack {
-                    Menu("Add to Timeline") {
-                        Button("Before first paragraph") {
-                            viewModel.addJingleCardToTimeline(card.id, afterParagraphID: nil)
+                        GridRow {
+                            fieldLabel("Notes")
+                            TextField("Template notes for generation", text: $card.promptSpec.promptText)
+                                .textFieldStyle(.roundedBorder)
+                                .gridCellColumns(3)
                         }
+                        GridRow {
+                            fieldLabel("Style tags")
+                            TextField("news, confident, clean", text: styleTagsText)
+                                .textFieldStyle(.roundedBorder)
+                                .gridCellColumns(2)
+                            SpeechSafetyBadge(safety: card.speechSafety)
+                                .gridColumnAlignment(.trailing)
+                        }
+                    }
+                    .padding(14)
+                    .background(Color(NSColor.controlBackgroundColor))
+                    .clipShape(RoundedRectangle(cornerRadius: 10))
 
-                        ForEach(Array(viewModel.paragraphs.enumerated()), id: \.element.id) { index, paragraph in
-                            Button("After paragraph \(index + 1)") {
-                                viewModel.addJingleCardToTimeline(card.id, afterParagraphID: paragraph.id)
+                    VStack(alignment: .leading, spacing: 6) {
+                        HStack {
+                            Text("ABC Source")
+                                .font(.headline)
+                            Spacer()
+                            if let path = card.cachedMIDIPath, !path.isEmpty {
+                                Label(URL(fileURLWithPath: path).lastPathComponent, systemImage: "checkmark.circle")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                    .help("Rendered MIDI is cached at \(path)")
                             }
                         }
-                    }
-                    Button("Generate Template") {
-                        viewModel.generateTemplateJingle(for: card.id)
-                    }
-                    Button("Validate") {
-                        viewModel.validateJingleCard(card.id)
-                    }
-                    Button("Preview") {
-                        viewModel.playJingleCardPreview(card.id)
-                    }
-                    Button("Stop") {
-                        viewModel.stopPlayback()
-                    }
-                    Button("Export MIDI") {
-                        viewModel.exportJingleCardMIDI(card.id)
-                    }
-                    Spacer()
-                    if let path = card.cachedMIDIPath, !path.isEmpty {
-                        Text(URL(fileURLWithPath: path).lastPathComponent)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+
+                        TextEditor(text: $card.abcSource)
+                            .font(.system(.body, design: .monospaced))
+                            .frame(minHeight: 220)
+                            .padding(6)
+                            .background(Color(NSColor.textBackgroundColor))
+                            .clipShape(RoundedRectangle(cornerRadius: 6))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 6)
+                                    .stroke(Color(NSColor.separatorColor).opacity(0.5), lineWidth: 1)
+                            )
+                            .overlay(alignment: .topLeading) {
+                                if card.abcSource.isEmpty {
+                                    Text("No ABC yet. Generate Template writes a starting point from the role and length above.")
+                                        .font(.callout)
+                                        .foregroundStyle(.tertiary)
+                                        .padding(12)
+                                        .allowsHitTesting(false)
+                                }
+                            }
                     }
                 }
-                .buttonStyle(.bordered)
+                .padding(16)
             }
-            .padding(18)
+
+            Divider()
+
+            HStack(spacing: 8) {
+                Menu {
+                    Button("Before first paragraph") {
+                        viewModel.addJingleCardToTimeline(card.id, afterParagraphID: nil)
+                    }
+                    ForEach(Array(viewModel.paragraphs.enumerated()), id: \.element.id) { index, paragraph in
+                        Button("After paragraph \(index + 1)") {
+                            viewModel.addJingleCardToTimeline(card.id, afterParagraphID: paragraph.id)
+                        }
+                    }
+                } label: {
+                    Label("Timeline", systemImage: "text.insert")
+                }
+                .help("Insert this cue into the export sequence")
+
+                Divider().frame(height: 16)
+
+                Button("Validate") {
+                    viewModel.validateJingleCard(card.id)
+                }
+                .help("Parse the ABC and report warnings")
+
+                Button {
+                    viewModel.playJingleCardPreview(card.id)
+                } label: {
+                    Label("Preview", systemImage: "play.fill")
+                }
+                .help("Play the cue as MIDI")
+
+                Button {
+                    viewModel.stopPlayback()
+                } label: {
+                    Image(systemName: "stop.fill")
+                }
+                .help("Stop playback")
+
+                Button("Export MIDI…") {
+                    viewModel.exportJingleCardMIDI(card.id)
+                }
+                .help("Write the rendered MIDI to the jingle cache")
+
+                Spacer()
+
+                Button("Generate ABC") {
+                    viewModel.generateTemplateJingle(for: card.id)
+                }
+                .buttonStyle(.borderedProminent)
+                .help("Write deterministic ABC from the role and target length")
+            }
+            .padding(12)
         }
+    }
+
+    private func fieldLabel(_ text: String) -> some View {
+        Text(text)
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .gridColumnAlignment(.trailing)
     }
 }
 
@@ -561,104 +659,147 @@ struct ReferenceVoiceEnrollmentSheet: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("Reference Voice")
-                .font(.title2)
-                .fontWeight(.bold)
+            HStack {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Reference Voice")
+                        .font(.title2.weight(.bold))
+                    Text("Record about 10 seconds of clean speech to clone your voice as a speaker preset.")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button("Close") {
+                    viewModel.isReferenceVoiceSheetPresented = false
+                }
+                .keyboardShortcut(.cancelAction)
+            }
 
-            Text("Generate a short script, read it into your Mac microphone, and save the recording as a reusable speaker profile. The app trims silence and works best with a VoiceDesign Qwen model.")
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-
-            Text("Target a clean sample of about 8 to 12 seconds. Keep the read natural and avoid long pauses.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-
-            VStack(alignment: .leading, spacing: 6) {
-                Text(viewModel.isPreferredReferenceVoiceModelSelected ? "Reference model: VoiceDesign selected" : "Reference model: switching to VoiceDesign")
-                    .font(.caption)
-                    .fontWeight(.semibold)
-
-                Text(viewModel.isPreferredReferenceVoiceModelCached ? "The VoiceDesign model is cached locally." : "The VoiceDesign model is required for Reference Voice and will be downloaded here.")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-
+            stepBox(number: 1, title: "Model") {
                 HStack(spacing: 10) {
-                    Button(viewModel.isPreferredReferenceVoiceModelCached ? "Load VoiceDesign Model" : "Download VoiceDesign Model") {
+                    Image(systemName: viewModel.isPreferredReferenceVoiceModelCached ? "checkmark.circle.fill" : "arrow.down.circle")
+                        .foregroundStyle(viewModel.isPreferredReferenceVoiceModelCached ? .green : .secondary)
+                    Text(viewModel.isPreferredReferenceVoiceModelCached
+                        ? "VoiceDesign model is cached locally."
+                        : "Voice cloning needs the VoiceDesign model.")
+                        .font(.callout)
+                    Spacer()
+                    Button(viewModel.isPreferredReferenceVoiceModelCached ? "Load Model" : "Download Model") {
                         Task { await viewModel.prepareReferenceVoiceModelIfNeeded(forceDownload: false) }
                     }
                     .disabled(viewModel.isPreparingReferenceVoiceModel || viewModel.isUpdatingModels)
-
-                    if viewModel.isPreparingReferenceVoiceModel || viewModel.isUpdatingModels {
+                }
+                if viewModel.isPreparingReferenceVoiceModel || viewModel.isUpdatingModels {
+                    HStack(spacing: 8) {
                         ProgressView(value: viewModel.modelUpdateProgress)
-                            .frame(width: 160)
                         Text(viewModel.modelUpdateNarrative)
-                            .font(.caption2)
+                            .font(.caption)
                             .foregroundStyle(.secondary)
+                            .lineLimit(1)
                     }
                 }
             }
 
-            HStack(spacing: 10) {
-                Button("Generate Script with AI") {
-                    Task { await viewModel.generateReferenceVoiceScript() }
-                }
-                .disabled(viewModel.isGeneratingReferenceVoiceScript || viewModel.isRecordingReferenceVoice)
-
-                Button("Use Default Script") {
-                    viewModel.referenceVoiceScript = ProjectViewModel.defaultReferenceVoiceScript
-                }
-                .disabled(viewModel.isRecordingReferenceVoice)
-
-                if viewModel.isRecordingReferenceVoice {
-                    Button("Stop Recording") {
-                        viewModel.stopReferenceVoiceRecording()
+            stepBox(number: 2, title: "Script") {
+                TextEditor(text: $viewModel.referenceVoiceScript)
+                    .font(.body)
+                    .frame(minHeight: 90, maxHeight: 140)
+                    .padding(6)
+                    .background(Color(NSColor.textBackgroundColor))
+                    .clipShape(RoundedRectangle(cornerRadius: 6))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 6)
+                            .stroke(Color(NSColor.separatorColor).opacity(0.5), lineWidth: 1)
+                    )
+                HStack {
+                    Button("Generate with AI") {
+                        Task { await viewModel.generateReferenceVoiceScript() }
                     }
-                    .buttonStyle(.borderedProminent)
-                } else {
-                    Button("Start Recording") {
-                        Task { await viewModel.startReferenceVoiceRecording() }
+                    .disabled(viewModel.isGeneratingReferenceVoiceScript || viewModel.isRecordingReferenceVoice)
+                    Button("Use Default") {
+                        viewModel.referenceVoiceScript = ProjectViewModel.defaultReferenceVoiceScript
                     }
-                    .buttonStyle(.borderedProminent)
+                    .disabled(viewModel.isRecordingReferenceVoice)
+                    Spacer()
+                    Text("Aim for 8–12 seconds read naturally, without long pauses.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
+                .controlSize(.small)
             }
 
-            TextEditor(text: $viewModel.referenceVoiceScript)
-                .font(.body)
-                .frame(minHeight: 160)
-                .padding(6)
-                .background(Color(NSColor.textBackgroundColor))
-                .cornerRadius(6)
-                .overlay(
-                    RoundedRectangle(cornerRadius: 6)
-                        .stroke(Color.gray.opacity(0.2), lineWidth: 1)
-                )
+            stepBox(number: 3, title: "Record") {
+                HStack(spacing: 10) {
+                    if viewModel.isRecordingReferenceVoice {
+                        Button {
+                            viewModel.stopReferenceVoiceRecording()
+                        } label: {
+                            Label("Stop Recording", systemImage: "stop.circle.fill")
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .tint(.red)
+                        ProgressView().controlSize(.small)
+                        Text("Recording… read the script now.")
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                    } else {
+                        Button {
+                            Task { await viewModel.startReferenceVoiceRecording() }
+                        } label: {
+                            Label("Start Recording", systemImage: "record.circle")
+                        }
+                        .buttonStyle(.borderedProminent)
+                    }
+                    Spacer()
+                }
+                Text(viewModel.referenceVoiceEnrollmentStatus)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
 
-            Text(viewModel.referenceVoiceEnrollmentStatus)
-                .font(.caption)
-                .foregroundStyle(.secondary)
+            Spacer(minLength: 0)
 
             HStack {
-                Button("Save Reference Voice") {
-                    viewModel.saveReferenceVoiceProfile()
-                }
-                .disabled(viewModel.isRecordingReferenceVoice || viewModel.isCleaningReferenceVoice)
-
-                Button(viewModel.isCleaningReferenceVoice ? "Cleaning..." : "Clean and Save") {
-                    Task { await viewModel.cleanAndSaveReferenceVoiceProfile() }
-                }
-                .disabled(viewModel.isRecordingReferenceVoice || viewModel.isCleaningReferenceVoice)
-
                 if viewModel.referenceVoiceProfile != nil {
-                    Button("Delete Reference Voice") {
+                    Button("Delete Reference Voice", role: .destructive) {
                         viewModel.deleteReferenceVoiceProfile()
                     }
                 }
-
                 Spacer()
+                Button(viewModel.isCleaningReferenceVoice ? "Cleaning…" : "Clean & Save") {
+                    Task { await viewModel.cleanAndSaveReferenceVoiceProfile() }
+                }
+                .disabled(viewModel.isRecordingReferenceVoice || viewModel.isCleaningReferenceVoice)
+                .help("Runs speech enhancement on the recording before saving")
+
+                Button("Save Reference Voice") {
+                    viewModel.saveReferenceVoiceProfile()
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(viewModel.isRecordingReferenceVoice || viewModel.isCleaningReferenceVoice)
             }
         }
         .padding(18)
-        .frame(minWidth: 720, minHeight: 520)
+        .frame(minWidth: 680, minHeight: 560)
+    }
+
+    @ViewBuilder
+    private func stepBox(number: Int, title: String, @ViewBuilder content: () -> some View) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                Text("\(number)")
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(.white)
+                    .frame(width: 18, height: 18)
+                    .background(Circle().fill(.tint))
+                Text(title)
+                    .font(.headline)
+            }
+            content()
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color(NSColor.controlBackgroundColor))
+        .clipShape(RoundedRectangle(cornerRadius: 10))
     }
 }
 

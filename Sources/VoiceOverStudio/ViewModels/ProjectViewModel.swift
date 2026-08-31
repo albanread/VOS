@@ -798,6 +798,20 @@ On Tuesday morning, Maya counted four blue lanterns near the station and said th
         }
     }
     
+    /// Identity-addressed binding for a jingle card; same rationale as
+    /// paragraphBinding(_:) — index bindings trap when the array shrinks.
+    func jingleCardBinding(_ id: UUID) -> Binding<ABCJingleCard> {
+        Binding(
+            get: { [weak self] in
+                self?.jingleCards.first(where: { $0.id == id }) ?? ABCJingleCard(id: id, name: "")
+            },
+            set: { [weak self] newValue in
+                guard let self, let index = self.jingleCards.firstIndex(where: { $0.id == id }) else { return }
+                self.jingleCards[index] = newValue
+            }
+        )
+    }
+
     /// Identity-addressed binding for a paragraph row. ForEach($paragraphs)
     /// bindings index into the array and trap when a removal lands between a
     /// mutation and the next render pass; resolving by id is always safe.
