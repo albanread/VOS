@@ -798,6 +798,21 @@ On Tuesday morning, Maya counted four blue lanterns near the station and said th
         }
     }
     
+    /// Identity-addressed binding for a paragraph row. ForEach($paragraphs)
+    /// bindings index into the array and trap when a removal lands between a
+    /// mutation and the next render pass; resolving by id is always safe.
+    func paragraphBinding(_ id: UUID) -> Binding<Paragraph> {
+        Binding(
+            get: { [weak self] in
+                self?.paragraphs.first(where: { $0.id == id }) ?? Paragraph(text: "")
+            },
+            set: { [weak self] newValue in
+                guard let self, let index = self.paragraphs.firstIndex(where: { $0.id == id }) else { return }
+                self.paragraphs[index] = newValue
+            }
+        )
+    }
+
     func addParagraph() {
         var p = Paragraph(text: "New paragraph text here.", voiceID: defaultVoiceConfigurationID())
         if p.outputFilename.isEmpty {

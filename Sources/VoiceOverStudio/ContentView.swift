@@ -31,9 +31,9 @@ struct ContentView: View {
                                 .frame(maxWidth: .infinity, alignment: .center)
                             }
 
-                            ForEach($viewModel.paragraphs) { $paragraph in
+                            ForEach(viewModel.paragraphs) { paragraph in
                                 VStack(alignment: .leading, spacing: 10) {
-                                    ParagraphRow(paragraph: $paragraph,
+                                    ParagraphRow(paragraph: viewModel.paragraphBinding(paragraph.id),
                                                  voiceOptions: viewModel.voiceOptions,
                                                  isTTSReady: viewModel.isTTSReady,
                                                  isLLMReady: viewModel.isLLMReady,
@@ -85,17 +85,19 @@ struct ContentView: View {
                     .defaultScrollAnchor(.top)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
 
-                    HStack {
-                        Text(viewModel.statusMessage)
-                            .font(.callout)
-                            .foregroundStyle(viewModel.isProcessing ? .blue : .secondary)
+                    HStack(spacing: 8) {
                         if viewModel.isProcessing {
                             ProgressView().controlSize(.small)
                         }
+                        Text(viewModel.statusMessage)
+                            .font(.callout)
+                            .foregroundStyle(viewModel.isProcessing ? .primary : .secondary)
+                            .lineLimit(1)
                         Spacer()
-                        Text("Paragraphs: \(viewModel.paragraphs.count)")
+                        Text("\(viewModel.paragraphs.filter { $0.audioPath != nil }.count) of \(viewModel.paragraphs.count) generated")
                             .font(.caption)
                             .foregroundStyle(.secondary)
+                            .monospacedDigit()
                     }
                     .padding(.horizontal, 12)
                     .padding(.vertical, 8)
@@ -129,14 +131,7 @@ struct ContentView: View {
                     Button(action: viewModel.addParagraph) {
                         Label("Add Paragraph", systemImage: "plus")
                     }
-
-                    Button(action: viewModel.saveTranscript) {
-                        Label("Save Transcript", systemImage: "square.and.arrow.down")
-                    }
-
-                    Button(action: viewModel.loadTranscript) {
-                        Label("Load Transcript", systemImage: "square.and.arrow.up")
-                    }
+                    .help("Add a paragraph")
 
                     Button(action: {
                         Task { await viewModel.generateAllAudio() }
@@ -144,17 +139,28 @@ struct ContentView: View {
                         Label("Generate All", systemImage: "waveform.badge.plus")
                     }
                     .disabled(!viewModel.isTTSReady || viewModel.isProcessing)
+                    .help("Synthesize audio for every paragraph")
 
                     Button(action: {
                         Task { await viewModel.exportFullSequence() }
                     }) {
-                        Label("Export Sequence", systemImage: "square.and.arrow.down")
+                        Label("Export", systemImage: "square.and.arrow.up")
                     }
                     .disabled(viewModel.paragraphs.isEmpty)
+                    .help("Export the stitched sequence")
 
                     Button(action: viewModel.openJingleLibrary) {
                         Label("Jingles", systemImage: "music.note.list")
                     }
+                    .help("Open the jingle library")
+
+                    Menu {
+                        Button("Save Transcript…") { viewModel.saveTranscript() }
+                        Button("Load Transcript…") { viewModel.loadTranscript() }
+                    } label: {
+                        Label("More", systemImage: "ellipsis.circle")
+                    }
+                    .help("Transcript save and load")
                 }
             }
         }
@@ -190,7 +196,7 @@ struct ContentView: View {
         if viewModel.isEditingReferenceVoiceConfiguration {
             ReferenceVoicePaneSummary(closeAction: viewModel.closeVoiceConfigurationPane)
                 .environmentObject(viewModel)
-        } else if let index = viewModel.activeVoiceConfigurationIndex {
+        } else if let index = viewModel.activeVoiceConfigurationIndex, viewModel.voiceConfigurations.indices.contains(index) {
             VoiceConfigurationPane(
                 configuration: $viewModel.voiceConfigurations[index],
                 baseVoiceOptions: viewModel.baseVoiceOptions,
@@ -205,204 +211,132 @@ struct ContentView: View {
     }
 
     private var settingsPane: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 15) {
-                Text("VoiceOver Studio")
-                    .font(.title2)
-                    .fontWeight(.bold)
-                    .padding(.bottom)
-
-                Group {
-                    Text("Settings")
-                        .font(.headline)
-
-                    Text("Model folders are auto-managed")
-                        .font(.subheadline)
-                        .padding(.top, 5)
-                    Text(viewModel.managedModelsRootDisplay)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    Text("Qwen cache: \(viewModel.ttsCacheDisplay)")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-
-                    Divider().padding(.vertical, 4)
-
-                    Text("Model Updater")
-                        .font(.subheadline)
-
-                    HStack {
-                        Text("Computer Tier")
-                        Picker("", selection: $viewModel.modelComputeTierRaw) {
-                            ForEach(ProjectViewModel.ComputeTier.allCases) { tier in
-                                Text(tier.title).tag(tier.rawValue)
-                            }
-                        }
-                        .pickerStyle(.menu)
-                        .labelsHidden()
-                        .accessibilityLabel("Computer Tier")
-                        Button("Auto-detect This Mac") {
-                            viewModel.autoDetectModelTier()
-                        }
+        Form {
+            Section("Models") {
+                Picker("Machine tier", selection: $viewModel.modelComputeTierRaw) {
+                    ForEach(ProjectViewModel.ComputeTier.allCases) { tier in
+                        Text(tier.title).tag(tier.rawValue)
                     }
+                }
+                .help("Chooses the recommended model pair for this Mac")
 
-                    Text("LLM (script advice): \(viewModel.currentRecommendation.llmName)")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    Text("TTS (voice synthesis): \(viewModel.currentRecommendation.ttsName)")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    Text(viewModel.currentRecommendation.rationale)
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                        .padding(.bottom, 10)
-
-                    Button(action: {
-                        Task { await viewModel.autoSetup() }
-                    }) {
-                        VStack(spacing: 4) {
-                            Text("1-Click Auto Setup")
-                                .font(.headline)
-                            Text("Download and configure everything automatically")
-                                .font(.caption)
-                                .foregroundStyle(.white.opacity(0.8))
-                        }
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 8)
+                LabeledContent("Recommended") {
+                    VStack(alignment: .trailing, spacing: 2) {
+                        Text(viewModel.currentRecommendation.llmName)
+                        Text(viewModel.currentRecommendation.ttsName)
                     }
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.large)
-                    .disabled(viewModel.isUpdatingModels)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.trailing)
+                }
+                .help(viewModel.currentRecommendation.rationale)
 
-                    if viewModel.isUpdatingModels || !viewModel.modelUpdateNarrative.contains("Idle") {
-                        VStack(alignment: .leading, spacing: 6) {
-                            ProgressView(value: viewModel.modelUpdateProgress)
-                                .frame(maxWidth: .infinity)
-                            Text(viewModel.modelUpdateNarrative)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                        }
-                        .padding(.vertical, 10)
-                        .background(Color.black.opacity(0.05))
-                        .cornerRadius(6)
-                    }
-
-                    DisclosureGroup("Advanced Settings") {
-                        VStack(alignment: .leading, spacing: 10) {
-                            Text("Manual URL Overrides")
-                                .font(.caption)
-                                .bold()
-                            
-                            TextField("LLM URL", text: $viewModel.modelUpdateURLLLM)
-                                .textFieldStyle(.roundedBorder)
-                                .font(.caption)
-
-                            TextField("Qwen TTS Model Repo", text: $viewModel.ttsModelRepo)
-                                .textFieldStyle(.roundedBorder)
-                                .font(.caption)
-
-                            HStack {
-                                Button("Download Qwen Model") {
-                                    Task { await viewModel.downloadTTSModel() }
-                                }
-                                .controlSize(.small)
-                                .disabled(viewModel.isUpdatingModels)
-
-                                Button("Open Qwen Repo") {
-                                    viewModel.openTTSDownloadPage()
-                                }
-                                .controlSize(.small)
-                            }
-                                
-                            Button("Re-Initialize Engines") {
-                                viewModel.initializeEngines()
-                            }
-                            .controlSize(.small)
-                        }
-                        .padding(.top, 5)
-                    }
-                    .padding(.top, 10)
-
-                    Divider().padding(.vertical, 4)
-
-                    Text("Reference Voice")
-                        .font(.subheadline)
-
-                    Text(viewModel.referenceVoiceProfile == nil ? "Enroll a microphone recording to create a stable speaker identity for Qwen." : "Reference Voice enrolled and available in the paragraph voice picker.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-
-                    Text("Best results come from a VoiceDesign Qwen model and a clean, quiet microphone recording.")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-
-                    Text(viewModel.referenceVoiceEnrollmentStatus)
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-
-                    Button(viewModel.referenceVoiceProfile == nil ? "Create Reference Voice" : "Manage Reference Voice") {
-                        viewModel.openReferenceVoiceEnrollment()
-                    }
-                    .buttonStyle(.bordered)
-
-                    Divider().padding(.vertical, 4)
-
-                    Text("Jingle Cards")
-                        .font(.subheadline)
-
-                    Text("Prompt-first or ABC-first reusable music cues for intros, transitions, bumpers, and outros.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-
-                    Button("Open Jingle Library") {
-                        viewModel.openJingleLibrary()
-                    }
-                    .buttonStyle(.bordered)
+                Button("Auto-Detect This Mac") {
+                    viewModel.autoDetectModelTier()
                 }
 
-                Spacer(minLength: 8)
-
-                Button(action: {
-                    Task { await viewModel.exportFullSequence() }
-                }) {
-                    Label("Export Full Sequence", systemImage: "waveform.circle.fill")
+                Button {
+                    Task { await viewModel.autoSetup() }
+                } label: {
+                    Label("Download & Set Up Models", systemImage: "arrow.down.circle")
                         .frame(maxWidth: .infinity)
                 }
-                .controlSize(.large)
-                .disabled(viewModel.paragraphs.isEmpty)
+                .buttonStyle(.borderedProminent)
+                .disabled(viewModel.isUpdatingModels)
+                .help("Downloads the recommended models and initializes both engines")
 
-                HStack {
-                    Button("Save Transcript") { viewModel.saveTranscript() }
-                    Button("Load Transcript") { viewModel.loadTranscript() }
-                }
-                .controlSize(.small)
-
-                Divider().padding(.vertical, 6)
-
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("Defaults")
-                        .font(.headline)
-                    HStack {
-                        Text("Default Gap (sec)")
-                        TextField("0.5", value: $viewModel.defaultGap, format: .number)
-                            .textFieldStyle(.roundedBorder)
-                            .frame(width: 60)
-                    }
-                    HStack {
-                        Text("Export Format")
-                        Picker("Export Format", selection: $viewModel.exportFormatRaw) {
-                            Text("M4A (AAC)").tag(ProjectViewModel.ExportFormat.m4a.rawValue)
-                            Text("WAV").tag(ProjectViewModel.ExportFormat.wav.rawValue)
-                        }
-                        .pickerStyle(.segmented)
-                        .frame(width: 200)
+                if viewModel.isUpdatingModels || !viewModel.modelUpdateNarrative.contains("Idle") {
+                    VStack(alignment: .leading, spacing: 6) {
+                        ProgressView(value: viewModel.modelUpdateProgress)
+                        Text(viewModel.modelUpdateNarrative)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
                     }
                 }
             }
-            .padding()
+
+            Section("Reference Voice") {
+                Text(viewModel.referenceVoiceProfile == nil
+                    ? "Record ~10 seconds of your voice to clone it as a speaker preset."
+                    : "Enrolled and available in the paragraph voice picker.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                Button(viewModel.referenceVoiceProfile == nil ? "Create Reference Voice…" : "Manage Reference Voice…") {
+                    viewModel.openReferenceVoiceEnrollment()
+                }
+            }
+
+            Section("Jingles") {
+                Button("Open Jingle Library…") {
+                    viewModel.openJingleLibrary()
+                }
+                .help("Reusable music cues for intros, transitions, bumpers, and outros")
+            }
+
+            Section("Project") {
+                Button {
+                    Task { await viewModel.exportFullSequence() }
+                } label: {
+                    Label("Export Full Sequence…", systemImage: "square.and.arrow.up")
+                        .frame(maxWidth: .infinity)
+                }
+                .disabled(viewModel.paragraphs.isEmpty)
+
+                HStack {
+                    Button("Save Transcript…") { viewModel.saveTranscript() }
+                    Button("Load Transcript…") { viewModel.loadTranscript() }
+                }
+                .controlSize(.small)
+            }
+
+            Section("Defaults") {
+                LabeledContent("Gap after paragraph (sec)") {
+                    TextField("", value: $viewModel.defaultGap, format: .number)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(width: 56)
+                        .multilineTextAlignment(.trailing)
+                        .labelsHidden()
+                }
+
+                Picker("Export format", selection: $viewModel.exportFormatRaw) {
+                    Text("M4A (AAC)").tag(ProjectViewModel.ExportFormat.m4a.rawValue)
+                    Text("WAV").tag(ProjectViewModel.ExportFormat.wav.rawValue)
+                }
+                .pickerStyle(.segmented)
+            }
+
+            Section {
+                DisclosureGroup("Advanced") {
+                    TextField("LLM download URL", text: $viewModel.modelUpdateURLLLM)
+                        .textFieldStyle(.roundedBorder)
+                        .font(.caption)
+                    TextField("Qwen TTS model repo", text: $viewModel.ttsModelRepo)
+                        .textFieldStyle(.roundedBorder)
+                        .font(.caption)
+                    HStack {
+                        Button("Download Qwen Model") {
+                            Task { await viewModel.downloadTTSModel() }
+                        }
+                        .disabled(viewModel.isUpdatingModels)
+                        Button("Open Repo Page") {
+                            viewModel.openTTSDownloadPage()
+                        }
+                    }
+                    .controlSize(.small)
+                    Button("Re-Initialize Engines") {
+                        viewModel.initializeEngines()
+                    }
+                    .controlSize(.small)
+
+                    Text("Models live in \(viewModel.managedModelsRootDisplay)")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                        .help("Qwen cache: \(viewModel.ttsCacheDisplay)")
+                }
+            }
         }
-        .background(Color(NSColor.controlBackgroundColor))
+        .formStyle(.grouped)
     }
 }
 
@@ -733,7 +667,7 @@ struct ParagraphRow: View {
     var voiceOptions: [VoiceOption]
     var isTTSReady: Bool
     var isLLMReady: Bool
-    var viewModel: ProjectViewModel // Access tagging methods
+    var viewModel: ProjectViewModel
     var onGenerate: () -> Void
     var onPlay: () -> Void
     var onImprove: () -> Void
@@ -743,200 +677,247 @@ struct ParagraphRow: View {
     var onConfigureVoice: () -> Void
     var onVoiceSelectionChanged: (String) -> Void
 
-    private var textEditorPanel: some View {
-        TextEditor(text: $paragraph.text)
-            .font(.body)
-            .frame(minHeight: 220, alignment: .topLeading)
-            .padding(4)
-            .background(Color(NSColor.textBackgroundColor))
-            .cornerRadius(5)
-            .overlay(
-                RoundedRectangle(cornerRadius: 5)
-                    .stroke(Color.gray.opacity(0.2), lineWidth: 1)
-            )
+    @State private var showDetails = false
+
+    private var position: Int {
+        (viewModel.scriptParagraphIndex(for: paragraph.id) ?? 0) + 1
     }
 
-    private var controlsPanel: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 6) {
-                Button(action: onImprove) {
-                    Label("Improve", systemImage: "wand.and.stars")
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-                .disabled(!isLLMReady || paragraph.isGenerating)
-                .help("Optimise text for TTS: expand numbers, add pauses, fix pronunciation")
+    private var selectedVoiceName: String {
+        voiceOptions.first(where: { $0.id == paragraph.voiceID })?.name ?? "Voice"
+    }
 
-                Button(action: onRephrase) {
-                    Label("Rephrase", systemImage: "text.quote")
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-                .disabled(!isLLMReady || paragraph.isGenerating)
-                .help("Rephrase for spoken clarity: simplify sentences, improve flow")
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            header
+            editor
+            footer
+            if showDetails {
+                detailsPanel
             }
+        }
+        .padding(12)
+        .background(Color(NSColor.windowBackgroundColor))
+        .clipShape(RoundedRectangle(cornerRadius: 10))
+        .overlay(
+            RoundedRectangle(cornerRadius: 10)
+                .stroke(Color(NSColor.separatorColor).opacity(0.6), lineWidth: 1)
+        )
+    }
 
-            HStack(spacing: 6) {
-                Button(action: onDuplicate) {
-                    Label("Duplicate", systemImage: "plus.square.on.square")
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
+    // MARK: Header — number, voice, actions
 
-                Button(action: onRemove) {
-                    Label("Remove", systemImage: "trash")
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-            }
-
-            Divider().padding(.vertical, 2)
-
-            Text("Voice")
-                .font(.caption)
+    private var header: some View {
+        HStack(spacing: 10) {
+            Text("\(position)")
+                .font(.caption.weight(.semibold).monospacedDigit())
                 .foregroundStyle(.secondary)
-            Picker("Voice", selection: $paragraph.voiceID) {
+                .frame(minWidth: 22)
+                .padding(.vertical, 3)
+                .background(.quaternary.opacity(0.6), in: RoundedRectangle(cornerRadius: 5))
+
+            Picker(selection: $paragraph.voiceID) {
                 ForEach(voiceOptions) { option in
                     Text(option.name).tag(option.id)
                 }
+            } label: {
+                Label("Voice", systemImage: "person.wave.2")
             }
             .labelsHidden()
+            .fixedSize()
             .onChange(of: paragraph.voiceID) {
                 onVoiceSelectionChanged(paragraph.voiceID)
             }
+            .help("Voice preset for this paragraph")
 
-            Text("Voice profile")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            Text(viewModel.voiceSummary(for: paragraph.voiceID))
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
+            Spacer()
 
-            Button(action: onConfigureVoice) {
-                Label(paragraph.voiceID == ReferenceVoiceProfile.voiceID ? "Reference Voice Details" : "Configure Voice", systemImage: "slider.horizontal.3")
+            HStack(spacing: 2) {
+                iconButton("wand.and.stars", help: "Improve: expand numbers and symbols for speech", action: onImprove)
+                    .disabled(!isLLMReady || paragraph.isGenerating)
+                iconButton("text.quote", help: "Rephrase for spoken clarity", action: onRephrase)
+                    .disabled(!isLLMReady || paragraph.isGenerating)
+                iconButton("plus.square.on.square", help: "Duplicate paragraph", action: onDuplicate)
+                Divider().frame(height: 14).padding(.horizontal, 4)
+                iconButton("trash", help: "Remove paragraph", role: .destructive, action: onRemove)
             }
-            .buttonStyle(.bordered)
-            .controlSize(.small)
+        }
+    }
 
-            Text(viewModel.voicePromptPreview(for: paragraph.voiceID))
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-                .lineLimit(4)
-                .fixedSize(horizontal: false, vertical: true)
+    private func iconButton(
+        _ systemImage: String,
+        help: String,
+        role: ButtonRole? = nil,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(role: role, action: action) {
+            Image(systemName: systemImage)
+                .frame(width: 24, height: 20)
+        }
+        .buttonStyle(.borderless)
+        .foregroundStyle(role == .destructive ? AnyShapeStyle(.red.opacity(0.85)) : AnyShapeStyle(.secondary))
+        .help(help)
+    }
 
-            Divider().padding(.vertical, 2)
+    // MARK: Editor — grows with content instead of a fixed void
 
-            Text("Output name")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            TextField("para_x.wav", text: $paragraph.outputFilename)
-                .textFieldStyle(.roundedBorder)
+    private var editor: some View {
+        TextField("Narration text…", text: $paragraph.text, axis: .vertical)
+            .textFieldStyle(.plain)
+            .font(.body)
+            .lineSpacing(3)
+            .lineLimit(2...16)
+            .padding(8)
+            .background(Color(NSColor.textBackgroundColor))
+            .clipShape(RoundedRectangle(cornerRadius: 6))
+            .overlay(
+                RoundedRectangle(cornerRadius: 6)
+                    .stroke(Color(NSColor.separatorColor).opacity(0.5), lineWidth: 1)
+            )
+    }
 
-            Divider().padding(.vertical, 2)
+    // MARK: Footer — generation, status, non-default badges, details toggle
 
-            HStack {
-                Text("Gap after:")
+    private var hasAudio: Bool {
+        paragraph.audioPath != nil && !paragraph.isGenerating
+    }
+
+    private var footer: some View {
+        HStack(spacing: 8) {
+            if paragraph.isGenerating {
+                ProgressView().controlSize(.small)
+                Text("Generating…")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                TextField("0.5", value: $paragraph.gapDuration, format: .number)
-                    .textFieldStyle(.roundedBorder)
-                    .frame(width: 50)
-                Text("sec")
+            } else if hasAudio {
+                Button(action: onPlay) {
+                    Label("Play", systemImage: "play.fill")
+                }
+                .controlSize(.small)
+                .help("Play the generated audio")
+
+                Button(action: onGenerate) {
+                    Image(systemName: "arrow.clockwise")
+                }
+                .controlSize(.small)
+                .disabled(!isTTSReady)
+                .help("Regenerate audio")
+
+                Label("Ready", systemImage: "checkmark.circle.fill")
                     .font(.caption)
+                    .foregroundStyle(.green)
+                    .labelStyle(.titleAndIcon)
+            } else {
+                Button(action: onGenerate) {
+                    Label("Generate", systemImage: "waveform")
+                }
+                .controlSize(.small)
+                .disabled(!isTTSReady)
+                .help("Synthesize audio for this paragraph")
             }
 
-            Divider().padding(.vertical, 2)
+            Spacer()
 
-            HStack(spacing: 10) {
-                HStack(spacing: 4) {
-                    Text("Speed:")
+            if paragraph.speed != .normal {
+                settingBadge("Speed \(paragraph.speed.label)")
+            }
+            if paragraph.pitch != .normal {
+                settingBadge("Pitch \(paragraph.pitch.label)")
+            }
+            if abs(paragraph.gapDuration - 0.5) > 0.001 {
+                settingBadge("Gap \(paragraph.gapDuration, specifier: "%.2g")s")
+            }
+
+            Button {
+                withAnimation(.easeInOut(duration: 0.15)) { showDetails.toggle() }
+            } label: {
+                Label("Details", systemImage: showDetails ? "chevron.up" : "chevron.down")
+                    .font(.caption)
+            }
+            .buttonStyle(.borderless)
+            .foregroundStyle(.secondary)
+            .help("Voice profile, output name, gap, speed, and pitch")
+        }
+    }
+
+    private func settingBadge(_ text: LocalizedStringKey) -> some View {
+        Text(text)
+            .font(.caption2)
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 2)
+            .background(.quaternary.opacity(0.5), in: Capsule())
+    }
+
+    // MARK: Details — secondary settings, collapsed by default
+
+    private var detailsPanel: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Divider()
+
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text(viewModel.voiceSummary(for: paragraph.voiceID))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer()
+                Button(paragraph.voiceID == ReferenceVoiceProfile.voiceID ? "Reference Voice…" : "Configure Voice…") {
+                    onConfigureVoice()
+                }
+                .controlSize(.small)
+            }
+
+            Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 8) {
+                GridRow {
+                    Text("Output name")
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                    Picker("", selection: $paragraph.speed) {
+                        .gridColumnAlignment(.trailing)
+                    TextField("para_x.wav", text: $paragraph.outputFilename)
+                        .textFieldStyle(.roundedBorder)
+                        .controlSize(.small)
+                        .frame(maxWidth: 260)
+                }
+                GridRow {
+                    Text("Gap after")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    HStack(spacing: 4) {
+                        TextField("0.5", value: $paragraph.gapDuration, format: .number)
+                            .textFieldStyle(.roundedBorder)
+                            .controlSize(.small)
+                            .frame(width: 56)
+                        Text("sec").font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+                GridRow {
+                    Text("Speed")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Picker("Speed", selection: $paragraph.speed) {
                         ForEach(Paragraph.SpeedPreset.allCases, id: \.self) { preset in
                             Text(preset.label).tag(preset)
                         }
                     }
+                    .pickerStyle(.segmented)
                     .labelsHidden()
-                    .frame(width: 80)
+                    .frame(maxWidth: 220)
                 }
-
-                HStack(spacing: 4) {
-                    Text("Pitch:")
+                GridRow {
+                    Text("Pitch")
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                    Picker("", selection: $paragraph.pitch) {
+                    Picker("Pitch", selection: $paragraph.pitch) {
                         ForEach(Paragraph.PitchPreset.allCases, id: \.self) { preset in
                             Text(preset.label).tag(preset)
                         }
                     }
+                    .pickerStyle(.segmented)
                     .labelsHidden()
-                    .frame(width: 80)
+                    .frame(maxWidth: 220)
                 }
             }
         }
-    }
-    
-    var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            ViewThatFits(in: .horizontal) {
-                HStack(alignment: .top, spacing: 12) {
-                    textEditorPanel
-                        .frame(minWidth: 320, maxWidth: .infinity)
-                    controlsPanel
-                        .frame(width: 240, alignment: .topLeading)
-                }
-
-                VStack(alignment: .leading, spacing: 12) {
-                    textEditorPanel
-                    controlsPanel
-                }
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            
-            HStack {
-                Button(action: onGenerate) {
-                    if paragraph.isGenerating {
-                        ProgressView().controlSize(.small)
-                    } else {
-                        Label("Generate Audio", systemImage: "waveform")
-                    }
-                }
-                .disabled(!isTTSReady || paragraph.isGenerating)
-                
-                if paragraph.audioPath != nil && !paragraph.isGenerating {
-                    Button(action: onPlay) {
-                        Image(systemName: "play.fill")
-                    }
-                    .buttonStyle(.plain)
-                    .padding(.leading, 10)
-                    .foregroundStyle(.green)
-                    
-                    Text("✓ Ready")
-                        .font(.caption)
-                        .foregroundStyle(.green)
-                } else if paragraph.isGenerating {
-                    Image(systemName: "play.fill")
-                        .foregroundStyle(.gray.opacity(0.4))
-                        .padding(.leading, 10)
-                    Text("Generating…")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                } else {
-                    Text("No Audio")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .padding(.leading, 10)
-                }
-                
-                Spacer()
-            }
-        }
-        .padding(10)
-        .background(Color(NSColor.windowBackgroundColor))
-        .cornerRadius(8)
-        .shadow(color: Color.black.opacity(0.05), radius: 2, x: 0, y: 1)
     }
 }
 

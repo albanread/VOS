@@ -9,6 +9,7 @@
 
 import AppKit
 import Foundation
+import SwiftUI
 
 @MainActor
 enum WindowCapture {
@@ -36,31 +37,37 @@ enum WindowCapture {
         }
     }
 
-    /// Write a PNG of the app's main window. Returns the file that was written.
+    /// Write a PNG of the app's UI. Renders the SwiftUI hierarchy directly with
+    /// ImageRenderer against the live view model — cacheDisplay cannot composite
+    /// SwiftUI's layer tree, and window-server captures need Screen Recording
+    /// permission. Returns the file that was written.
     @discardableResult
     static func captureMainWindow(to requestedPath: String?) throws -> URL {
-        let app = NSApplication.shared
-        let window = app.mainWindow
-            ?? app.keyWindow
-            ?? app.windows.first(where: { $0.isVisible && $0.contentView != nil })
+        guard let model = ScriptingRegistry.viewModel, let uiState = ScriptingRegistry.uiState else {
+            throw CaptureError.noWindow
+        }
 
-        guard let window else { throw CaptureError.noWindow }
-        guard let contentView = window.contentView else { throw CaptureError.noContentView }
+        let window = NSApplication.shared.mainWindow
+            ?? NSApplication.shared.keyWindow
+            ?? NSApplication.shared.windows.first(where: { $0.isVisible && $0.contentView != nil })
+        let size = window?.contentView.map { CGSize(width: $0.bounds.width, height: $0.bounds.height) }
+            ?? CGSize(width: 1280, height: 820)
+        guard size.width >= 1, size.height >= 1 else { throw CaptureError.emptyBounds }
 
-        let bounds = contentView.bounds
-        guard bounds.width >= 1, bounds.height >= 1 else { throw CaptureError.emptyBounds }
+        let root = ContentView()
+            .environmentObject(model)
+            .environmentObject(uiState)
+            .frame(width: size.width, height: size.height)
+            .background(Color(nsColor: .windowBackgroundColor))
 
-        // Layer-backed SwiftUI content may not have painted while the window
-        // is in the background; force a display pass before caching.
-        window.displayIfNeeded()
-        contentView.displayIfNeeded()
+        let renderer = ImageRenderer(content: root)
+        renderer.scale = window?.backingScaleFactor ?? 2.0
 
-        guard let representation = contentView.bitmapImageRepForCachingDisplay(in: bounds) else {
+        guard let cgImage = renderer.cgImage else {
             throw CaptureError.bitmapUnavailable
         }
-        representation.size = bounds.size
-        contentView.cacheDisplay(in: bounds, to: representation)
 
+        let representation = NSBitmapImageRep(cgImage: cgImage)
         guard let data = representation.representation(using: .png, properties: [:]) else {
             throw CaptureError.encodingFailed
         }

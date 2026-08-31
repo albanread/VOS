@@ -169,14 +169,12 @@ struct VoiceOverStudioApp: App {
                 .keyboardShortcut("e", modifiers: [.command, .shift])
             }
 
-            CommandMenu("View") {
-                Button("Settings") {
-                    uiState.showSettings()
-                }
-
+            // Extend the system View menu instead of adding a second one.
+            CommandGroup(after: .sidebar) {
                 Button(uiState.splitVisibility == .detailOnly ? "Show Settings Pane" : "Hide Settings Pane") {
                     uiState.toggleSettingsPane()
                 }
+                .keyboardShortcut("0", modifiers: [.command])
             }
         }
     }
