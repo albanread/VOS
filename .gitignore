@@ -34,3 +34,6 @@ ThirdParty/**/node_modules/
 
 # Built Metal shader library (regenerate with Scripts/build-mlx-metallib.sh)
 *.metallib
+
+# Release build output (zips + app bundles live here, never in git)
+Build/

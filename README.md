@@ -2,6 +2,13 @@
 
 I dont know about you, but I spend more time recording speech voice overs, than I do recording my actual videos, and I dont enjoy the sound of my own voice, this application allows you to script a 'voice over' for your videos.
 
+## Install
+
+Grab the signed and notarized build from the
+[latest release](https://github.com/albanread/VOS/releases/latest), unzip, and
+drag `VoiceOverStudio.app` to Applications. Requires macOS 15+ on Apple
+Silicon; models download on first run via the in-app setup.
+
 Local-only macOS app for Apple Silicon that writes and produces voice-over tracks with on-device models. Text polishing uses llama.cpp, while speech generation now runs through a native Swift + MLX Qwen3-TTS pipeline.
 
 Thanks to Qwen3 - this version sounds more human than many speech synthesizers, downsides are that this does require a lot of memory, 16GB seems like a mininum to me, and more is especially useful if you are going to use the reference voice recording.
@@ -9,7 +16,8 @@ Thanks to Qwen3 - this version sounds more human than many speech synthesizers, 
 Like many A.I. features this is very non-deterministic,  meaning that voices drift significantly in tone and character.
 
 ## What it does
-- Paragraph-centric editor with per-paragraph text, voice preset, speed, gap, and output filename.
+- Paragraph-centric editor: compact cards with per-paragraph text, voice preset, speed, pitch, gap, and output filename; secondary settings live in a per-card Details disclosure.
+- Speed and pitch are independent: tempo changes use real time-stretching (AVAudioUnitTimePitch), so faster delivery no longer raises pitch.
 - Local inference only: llama.cpp GGUF for Improve/Rephrase and `mlx-audio-swift` + `mlx-swift` for Qwen3-TTS speech generation.
 - Audio workflow: per-paragraph WAV generation, inline preview, and stitched export to M4A or WAV.
 - Audio shaping: per-paragraph pitch control, tempo-style speed control, and post-generation speech loudness normalization for more consistent output levels.
@@ -125,6 +133,25 @@ launches a verified-fresh scriptable instance and
 - Default LLM downloads live under `~/Library/vos2026/llm`.
 - The default TTS repo is `mlx-community/Qwen3-TTS-12Hz-0.6B-Base-8bit`, with larger Qwen recommendations selected on bigger machines.
 - Advanced settings can override the LLM URL and the Qwen model repo string.
+
+## Releasing
+
+`Scripts/release.sh` builds the release bundle, signs it with the Developer ID
+certificate and hardened runtime (microphone entitlement included), and zips it
+under `Build/`. Notarization needs a one-time credential profile:
+
+```bash
+xcrun notarytool store-credentials <profile> --apple-id <apple-id> --team-id <team-id>
+```
+
+then:
+
+```bash
+xcrun notarytool submit Build/VoiceOverStudio-<version>.zip --keychain-profile <profile> --wait
+xcrun stapler staple Build/release/VoiceOverStudio.app
+```
+
+Re-zip after stapling and attach the zip to a GitHub release.
 
 ## Troubleshooting
 - If `Bundle.module` build errors mention a missing `default.metallib`, rerun `./Scripts/build-mlx-metallib.sh` and then `swift build`.

@@ -43,11 +43,21 @@ cp "$EXECUTABLE" "$MACOS_DIR/$APP_NAME"
 chmod +x "$MACOS_DIR/$APP_NAME"
 cp "$INFO_PLIST_SOURCE" "$CONTENTS_DIR/Info.plist"
 
-cp -R "$RESOURCE_BUNDLE" "$APP_BUNDLE/${APP_NAME}_${APP_NAME}.bundle"
+# Everything must live under Contents/ or codesign rejects the bundle as
+# having unsealed contents. Bundle.module resolves via Contents/Resources.
 cp -R "$RESOURCE_BUNDLE" "$RESOURCES_DIR/${APP_NAME}_${APP_NAME}.bundle"
 
-if [[ -f "$BIN_PATH/default.metallib" ]]; then
-  cp "$BIN_PATH/default.metallib" "$RESOURCES_DIR/default.metallib"
+# Pre-stage the MLX metallib beside the executable under both names the
+# runtime bootstrap looks for. With the files already present and fresh,
+# MLXMetalLibraryBootstrap.stageIfNeeded() never writes into the bundle at
+# launch, which would break the code signature seal.
+METALLIB_SOURCE="$RESOURCE_BUNDLE/default.metallib"
+if [[ ! -f "$METALLIB_SOURCE" ]]; then
+  METALLIB_SOURCE="$REPO_ROOT/Sources/VoiceOverStudio/Resources/default.metallib"
+fi
+if [[ -f "$METALLIB_SOURCE" ]]; then
+  cp "$METALLIB_SOURCE" "$MACOS_DIR/default.metallib"
+  cp "$METALLIB_SOURCE" "$MACOS_DIR/mlx.metallib"
 fi
 
 if [[ -f "$ICON_SOURCE" ]]; then
