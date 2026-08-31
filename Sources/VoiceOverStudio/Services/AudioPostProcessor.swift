@@ -137,10 +137,17 @@ enum AudioPostProcessor {
         let renderBuffer = AVAudioPCMBuffer(pcmFormat: engine.manualRenderingFormat,
                                              frameCapacity: engine.manualRenderingMaximumFrameCount)!
         let estimatedOutputFrames = AVAudioFramePosition((Double(frameCount) / Double(clampedRate)).rounded(.up))
+        // Render a little past the estimate so the time/pitch unit's tail is captured.
         let renderTargetFrames = max(estimatedOutputFrames, 1) + AVAudioFramePosition(engine.manualRenderingMaximumFrameCount * 8)
-        var sawInputCompletion = false
 
-        while engine.manualRenderingSampleTime < renderTargetFrames {
+        // renderOffline does not advance manualRenderingSampleTime when it cannot
+        // produce audio, so a status that leaves the loop condition unchanged would
+        // otherwise spin forever. Bail out once rendering stops making progress.
+        let maximumStalledRenders = 8
+        var stalledRenders = 0
+
+        renderLoop: while engine.manualRenderingSampleTime < renderTargetFrames {
+            let sampleTimeBeforeRender = engine.manualRenderingSampleTime
             let status = try engine.renderOffline(engine.manualRenderingMaximumFrameCount,
                                                    to: renderBuffer)
             switch status {
@@ -149,21 +156,31 @@ enum AudioPostProcessor {
                     try outputFile.write(from: renderBuffer)
                 }
             case .insufficientDataFromInputNode:
-                sawInputCompletion = true
-                if engine.manualRenderingSampleTime >= estimatedOutputFrames {
-                    break
+                // The whole source buffer is scheduled before rendering starts, so this
+                // means the input is drained. Keep whatever partial frames this call
+                // produced, then stop: further renders cannot add anything.
+                if renderBuffer.frameLength > 0 {
+                    try outputFile.write(from: renderBuffer)
                 }
+                break renderLoop
             case .cannotDoInCurrentContext:
-                continue
+                // Transient; retry on the next iteration. Falls through to the stall
+                // guard below, which bounds how many times that can happen.
+                break
             case .error:
                 throw NSError(domain: "AudioPostProcessor", code: -1,
                               userInfo: [NSLocalizedDescriptionKey: "Offline render failed"])
             @unknown default:
-                break
+                break renderLoop
             }
 
-            if sawInputCompletion && engine.manualRenderingSampleTime >= estimatedOutputFrames {
-                break
+            if engine.manualRenderingSampleTime > sampleTimeBeforeRender {
+                stalledRenders = 0
+            } else {
+                stalledRenders += 1
+                if stalledRenders >= maximumStalledRenders {
+                    break renderLoop
+                }
             }
         }
 
