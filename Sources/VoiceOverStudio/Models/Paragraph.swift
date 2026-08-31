@@ -9,7 +9,6 @@ struct Paragraph: Identifiable, Codable {
     var id = UUID()
     var text: String
     var voiceID: String = "narrator_clear"
-    var voiceInstructions: String = ""
     var gapDuration: Double = 0.5 // Seconds of silence after this paragraph
     var speed: SpeedPreset = .normal
 
@@ -63,14 +62,13 @@ struct Paragraph: Identifiable, Codable {
     var outputFilename: String = ""
 
     enum CodingKeys: String, CodingKey {
-        case id, text, voiceID, voiceSid, voiceInstructions, gapDuration, speed, pitch, audioPath, outputFilename
+        case id, text, voiceID, voiceSid, gapDuration, speed, pitch, audioPath, outputFilename
     }
 
     init(
         id: UUID = UUID(),
         text: String,
         voiceID: String = "narrator_clear",
-        voiceInstructions: String = "",
         gapDuration: Double = 0.5,
         speed: SpeedPreset = .normal,
         pitch: PitchPreset = .normal,
@@ -81,7 +79,6 @@ struct Paragraph: Identifiable, Codable {
         self.id = id
         self.text = text
         self.voiceID = voiceID
-        self.voiceInstructions = voiceInstructions
         self.gapDuration = gapDuration
         self.speed = speed
         self.pitch = pitch
@@ -100,7 +97,6 @@ struct Paragraph: Identifiable, Codable {
             let legacyVoiceSID = try container.decodeIfPresent(Int32.self, forKey: .voiceSid) ?? 0
             voiceID = Self.migrateLegacyVoiceID(from: legacyVoiceSID)
         }
-        voiceInstructions = try container.decodeIfPresent(String.self, forKey: .voiceInstructions) ?? ""
         gapDuration = try container.decodeIfPresent(Double.self, forKey: .gapDuration) ?? 0.5
         if let preset = try? container.decodeIfPresent(SpeedPreset.self, forKey: .speed) {
             speed = preset
@@ -122,7 +118,6 @@ struct Paragraph: Identifiable, Codable {
         try container.encode(id, forKey: .id)
         try container.encode(text, forKey: .text)
         try container.encode(voiceID, forKey: .voiceID)
-        try container.encode(voiceInstructions, forKey: .voiceInstructions)
         try container.encode(gapDuration, forKey: .gapDuration)
         try container.encode(speed, forKey: .speed)
         try container.encode(pitch, forKey: .pitch)
