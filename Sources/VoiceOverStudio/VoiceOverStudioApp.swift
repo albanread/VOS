@@ -10,6 +10,10 @@ import AppKit
 final class AppUIState: ObservableObject {
     @Published var splitVisibility: NavigationSplitViewVisibility = .all
 
+    init() {
+        ScriptingRegistry.registerUIState(self)
+    }
+
     func showSettings() {
         splitVisibility = .all
     }

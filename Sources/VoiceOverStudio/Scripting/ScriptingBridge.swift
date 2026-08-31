@@ -31,6 +31,11 @@ enum ScriptingRegistry {
         uiState = state
     }
 
+    /// Called from the objects' own initializers so Apple Events work even when
+    /// a background launch races window creation and onAppear never fires.
+    static func registerModel(_ model: ProjectViewModel) { viewModel = model }
+    static func registerUIState(_ state: AppUIState) { uiState = state }
+
     /// Cocoa scripting always dispatches on the main thread, so accessors can
     /// hop onto the main actor without awaiting.
     static func withModel<T>(_ body: (ProjectViewModel) -> T, fallback: T) -> T {

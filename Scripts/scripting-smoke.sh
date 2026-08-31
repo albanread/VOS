@@ -6,6 +6,10 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 "$SCRIPT_DIR/relaunch-scripting.sh"
+# Background launches can race window creation; activating guarantees the
+# window exists for UI-dependent checks like capture screenshot.
+osascript -e 'tell application "VoiceOverStudio" to activate' >/dev/null 2>&1
+sleep 1
 
 PASS=0; FAIL=0
 check() {  # check <label> <applescript>

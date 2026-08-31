@@ -256,6 +256,7 @@ On Tuesday morning, Maya counted four blue lanterns near the station and said th
     }
     
     init() {
+        ScriptingRegistry.registerModel(self)
         prepareDefaultModelFoldersAndPaths()
         loadVoiceConfigurationStore()
         loadJingleCardStore()
