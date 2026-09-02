@@ -40,6 +40,22 @@ struct ClipSummary {
     }
 }
 
+/// A clip with its working statistics, for the clip manager.
+struct ClipListing {
+    let id: Int64
+    let videoPath: String
+    let workspacePath: String?
+    let voiceOverCount: Int
+    let voicedSeconds: Double
+    let recordedCount: Int
+    let updatedAt: Date
+
+    var isTranscript: Bool { videoPath.isEmpty }
+    var displayName: String {
+        isTranscript ? "Transcript (voice only)" : URL(fileURLWithPath: videoPath).lastPathComponent
+    }
+}
+
 struct ClipRecord {
     var clipID: Int64?
     var videoPath: String
@@ -261,6 +277,47 @@ final class ProjectStore {
     }
 
     // MARK: - Clips
+
+    /// Clips of a project with counts and voiced durations, transcript first.
+    func clipListings(projectID: Int64) -> [ClipListing] {
+        var statement: OpaquePointer?
+        defer { sqlite3_finalize(statement) }
+        let sql = """
+        SELECT c.id, c.video_path, c.workspace_path, c.updated_at,
+               (SELECT COUNT(*) FROM narrations n WHERE n.clip_id = c.id),
+               (SELECT COALESCE(SUM(t.duration), 0) FROM narrations n
+                  LEFT JOIN voice_takes t ON t.narration_id = n.id
+                  WHERE n.clip_id = c.id),
+               (SELECT COUNT(*) FROM narrations n WHERE n.clip_id = c.id AND n.is_recorded = 1)
+        FROM clips c
+        WHERE c.project_id = ?1
+        ORDER BY (c.video_path = '') DESC, c.video_path;
+        """
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK,
+              let stmt = statement
+        else { return [] }
+        sqlite3_bind_int64(stmt, 1, projectID)
+        var result: [ClipListing] = []
+        while sqlite3_step(stmt) == SQLITE_ROW {
+            result.append(ClipListing(
+                id: sqlite3_column_int64(stmt, 0),
+                videoPath: columnText(stmt, 1) ?? "",
+                workspacePath: columnText(stmt, 2),
+                voiceOverCount: Int(sqlite3_column_int64(stmt, 4)),
+                voicedSeconds: sqlite3_column_double(stmt, 5),
+                recordedCount: Int(sqlite3_column_int64(stmt, 6)),
+                updatedAt: Date(timeIntervalSince1970: sqlite3_column_double(stmt, 3))
+            ))
+        }
+        return result
+    }
+
+    /// Delete a clip; its narrations and voice blobs cascade.
+    func deleteClip(id: Int64) {
+        execute("DELETE FROM clips WHERE id = ?1;", bindings: { stmt in
+            sqlite3_bind_int64(stmt, 1, id)
+        })
+    }
 
     func findClipID(projectID: Int64, videoPath: String) -> Int64? {
         queryInt64("SELECT id FROM clips WHERE project_id = ?1 AND video_path = ?2", bind: { stmt in

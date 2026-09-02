@@ -191,6 +191,10 @@ struct ContentView: View {
             OpenProjectSheet()
                 .environmentObject(viewModel)
         }
+        .sheet(isPresented: $viewModel.isClipManagerSheetPresented) {
+            ClipManagerSheet()
+                .environmentObject(viewModel)
+        }
         .onChange(of: viewModel.voiceConfigurations) {
             viewModel.persistVoiceConfigurationStore()
             viewModel.refreshVoiceOptions()
@@ -298,6 +302,14 @@ struct ContentView: View {
                         .frame(maxWidth: .infinity)
                 }
                 .help("Start a fresh project; this one stays in the database")
+
+                Button {
+                    viewModel.openClipManager()
+                } label: {
+                    Label("Manage Clips…", systemImage: "film.stack")
+                        .frame(maxWidth: .infinity)
+                }
+                .help("List, open, add, and remove this project's video clips")
 
                 if viewModel.clipSummaries.count > 1 {
                     Picker("Clip", selection: Binding(
@@ -504,6 +516,131 @@ struct OpenProjectSheet: View {
         guard let selected else { return }
         viewModel.openProject(selected)
         viewModel.isOpenProjectSheetPresented = false
+    }
+}
+
+struct ClipManagerSheet: View {
+    @EnvironmentObject private var viewModel: ProjectViewModel
+    @State private var listings: [ClipListing] = []
+    @State private var selected: Int64?
+    @State private var confirmRemove: ClipListing?
+
+    var body: some View {
+        VStack(spacing: 0) {
+            List(selection: $selected) {
+                ForEach(listings, id: \.id) { listing in
+                    HStack(spacing: 10) {
+                        Image(systemName: listing.isTranscript ? "waveform.path" : "film")
+                            .foregroundStyle(listing.id == viewModel.activeClip?.id ? Color.accentColor : .secondary)
+                            .frame(width: 20)
+                        VStack(alignment: .leading, spacing: 2) {
+                            HStack(spacing: 6) {
+                                Text(listing.displayName)
+                                    .font(.body.weight(listing.id == viewModel.activeClip?.id ? .semibold : .regular))
+                                if listing.id == viewModel.activeClip?.id {
+                                    Text("current")
+                                        .font(.caption2)
+                                        .foregroundStyle(.secondary)
+                                        .padding(.horizontal, 5)
+                                        .padding(.vertical, 1)
+                                        .background(.quaternary.opacity(0.6), in: Capsule())
+                                }
+                            }
+                            Text(caption(for: listing))
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                    }
+                    .padding(.vertical, 3)
+                    .tag(listing.id)
+                    .onTapGesture(count: 2) { open(listing) }
+                }
+            }
+            .listStyle(.inset)
+            .frame(minWidth: 560, minHeight: 300)
+
+            HStack {
+                Button {
+                    viewModel.attachVideo()
+                    // The attach panel blocks; refresh when it returns.
+                    Task {
+                        try? await Task.sleep(nanoseconds: 400_000_000)
+                        refresh()
+                    }
+                } label: {
+                    Label("Add Video Clip…", systemImage: "plus")
+                }
+                .help("Attach another video to this project (or drop one anywhere on this window)")
+
+                if let victim = confirmRemove {
+                    Button(role: .destructive) {
+                        viewModel.removeClip(victim.id)
+                        confirmRemove = nil
+                        refresh()
+                    } label: {
+                        Text("Remove \"\(victim.displayName)\"")
+                    }
+                } else if let selected, let listing = listings.first(where: { $0.id == selected }), !listing.isTranscript {
+                    Button(role: .destructive) {
+                        confirmRemove = listing
+                    } label: {
+                        Label("Remove", systemImage: "trash")
+                    }
+                    .help("Remove this clip and its voice-overs from the project (the workspace folder is kept)")
+                }
+
+                Spacer()
+
+                Button("Done") {
+                    viewModel.isClipManagerSheetPresented = false
+                }
+                .keyboardShortcut(.cancelAction)
+
+                Button("Open", action: openSelection)
+                    .buttonStyle(.borderedProminent)
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(selected == nil)
+            }
+            .padding(12)
+        }
+        .frame(minWidth: 600, minHeight: 420)
+        .dropDestination(for: URL.self) { urls, _ in
+            guard let url = urls.first(where: VideoTimelineService.isMovieURL) else { return false }
+            Task {
+                _ = await viewModel.attachVideoFile(at: url)
+                refresh()
+            }
+            return true
+        }
+        .onAppear(perform: refresh)
+    }
+
+    private func refresh() {
+        listings = viewModel.clipManagerListings()
+        selected = viewModel.activeClip?.id ?? listings.first?.id
+    }
+
+    private func caption(for listing: ClipListing) -> String {
+        let minutes = Int(listing.voicedSeconds) / 60
+        let seconds = Int(listing.voicedSeconds) % 60
+        var parts = ["\(listing.voiceOverCount) voice-over\(listing.voiceOverCount == 1 ? "" : "s")",
+                     "\(minutes)m \(String(format: "%02d", seconds))s voiced"]
+        if listing.recordedCount > 0 {
+            parts.append("\(listing.recordedCount) recorded")
+        }
+        parts.append("updated \(listing.updatedAt.formatted(.relative(presentation: .named)))")
+        return parts.joined(separator: " · ")
+    }
+
+    private func openSelection() {
+        guard let selected, let listing = listings.first(where: { $0.id == selected }) else { return }
+        open(listing)
+    }
+
+    private func open(_ listing: ClipListing) {
+        viewModel.switchToClip(listing.id)
+        viewModel.isClipManagerSheetPresented = false
     }
 }
 

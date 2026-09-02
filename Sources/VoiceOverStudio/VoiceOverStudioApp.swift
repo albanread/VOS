@@ -165,6 +165,11 @@ struct VoiceOverStudioApp: App {
                 }
                 .keyboardShortcut("o", modifiers: [.command, .shift])
 
+                Button("Manage Clips…") {
+                    viewModel.openClipManager()
+                }
+                .keyboardShortcut("c", modifiers: [.command, .shift])
+
                 Divider()
 
                 Menu("Open Recent") {

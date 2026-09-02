@@ -289,6 +289,7 @@ On Tuesday morning, Maya counted four blue lanterns near the station and said th
 
     @Published var isNewProjectSheetPresented = false
     @Published var isOpenProjectSheetPresented = false
+    @Published var isClipManagerSheetPresented = false
     @Published private(set) var recentProjects: [ProjectListing] = []
 
     var activeProjectID: Int64? { currentProjectID }
@@ -448,6 +449,57 @@ On Tuesday morning, Maya counted four blue lanterns near the station and said th
     /// Every project, newest first — the Open Project dialog.
     func recentProjectListings() -> [ProjectListing] {
         projectStore?.listProjects() ?? []
+    }
+
+    /// The current project's clips with statistics — the clip manager.
+    func clipManagerListings() -> [ClipListing] {
+        guard let projectID = currentProjectID else { return [] }
+        return projectStore?.clipListings(projectID: projectID) ?? []
+    }
+
+    func openClipManager() {
+        isClipManagerSheetPresented = true
+    }
+
+    /// Remove a video clip from the project (narrations and stored voice
+    /// cascade with it). Removing the active clip switches to the project's
+    /// voice-only transcript first. The transcript clip itself stays.
+    func removeClip(_ clipID: Int64) {
+        guard let store = projectStore, let projectID = currentProjectID else { return }
+        guard let listing = store.clipListings(projectID: projectID).first(where: { $0.id == clipID }),
+              !listing.isTranscript
+        else {
+            statusMessage = "The voice-only transcript stays with the project."
+            return
+        }
+
+        persistVideoProject()
+        if clipID == currentClipID {
+            if let transcriptID = store.findClipID(projectID: projectID, videoPath: ""),
+               let record = store.loadClip(clipID: transcriptID) {
+                currentClipID = transcriptID
+                videoPath = nil
+                videoWorkspaceURL = nil
+                videoTimelineDuration = 0
+                videoController.unload()
+                applyClipRecord(record)
+            } else {
+                currentClipID = nil
+                videoPath = nil
+                videoWorkspaceURL = nil
+                videoTimelineDuration = 0
+                videoController.unload()
+                paragraphs = []
+                paragraphAudioDurations = [:]
+                addStarterParagraphIfEmpty()
+                persistVideoProject()
+            }
+            store.setActive(projectID: projectID, clipID: currentClipID)
+        }
+        store.deleteClip(id: clipID)
+        refreshClipSummaries()
+        refreshRecentProjects()
+        statusMessage = "Removed clip \"\(listing.displayName)\" from the project."
     }
 
     /// Open another project: file the current one, restore the target and
