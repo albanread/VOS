@@ -104,6 +104,9 @@ enum MenuSurface {
         MenuAction("open video timeline", summary: "Show the video timeline sheet.") { model in
             model.openVideoTimeline()
         },
+        MenuAction("close video timeline", summary: "Dismiss the video timeline sheet.") { model in
+            model.isVideoTimelineSheetPresented = false
+        },
         MenuAction("play video preview", summary: "Play the attached video with the anchored voice-over preview.") { model in
             model.videoController.playPause()
         },

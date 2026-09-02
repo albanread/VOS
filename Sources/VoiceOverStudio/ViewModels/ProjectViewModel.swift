@@ -250,6 +250,21 @@ On Tuesday morning, Maya counted four blue lanterns near the station and said th
     /// that video's paragraph WAV cache; the database is the source of truth.
     @Published private(set) var videoWorkspaceURL: URL?
 
+    /// Duration of the attached video, loaded from the file itself — available
+    /// without opening the timeline sheet, so re-timing works from the
+    /// transcript view too.
+    @Published private(set) var videoTimelineDuration: Double = 0
+
+    func refreshVideoTimelineDuration() async {
+        guard let path = videoPath, FileManager.default.fileExists(atPath: path) else {
+            videoTimelineDuration = 0
+            return
+        }
+        if let seconds = try? await AVURLAsset(url: URL(fileURLWithPath: path)).load(.duration).seconds, seconds.isFinite, seconds > 0 {
+            videoTimelineDuration = seconds
+        }
+    }
+
     /// A fresh workspace folder (numbered on name collisions); reopening an
     /// existing clip reuses the folder recorded in the database.
     func makeWorkspace(for videoURL: URL) -> URL {
@@ -394,6 +409,7 @@ On Tuesday morning, Maya counted four blue lanterns near the station and said th
             }
             applyClipRecord(record)
         }
+        Task { await refreshVideoTimelineDuration() }
         refreshRecentProjects()
     }
 
@@ -536,7 +552,7 @@ On Tuesday morning, Maya counted four blue lanterns near the station and said th
     /// The largest free span on the active clip's timeline where a new voice
     /// clip could be inserted. Voice-only clips always have room.
     func largestFreeTimelineGap() -> Double? {
-        guard hasVideoClip, videoController.isLoaded, videoController.duration > 0 else {
+        guard hasVideoClip, videoTimelineDuration > 0 else {
             return nil // voice-only: unbounded
         }
         let spans = videoVoiceSpans.sorted { $0.start < $1.start }
@@ -548,7 +564,7 @@ On Tuesday morning, Maya counted four blue lanterns near the station and said th
             }
             cursor = max(cursor, span.end)
         }
-        best = max(best, videoController.duration - cursor)
+        best = max(best, videoTimelineDuration - cursor)
         return best
     }
 
@@ -1133,6 +1149,7 @@ On Tuesday morning, Maya counted four blue lanterns near the station and said th
             statusMessage = "Video attached: \(url.lastPathComponent)"
         }
 
+        await refreshVideoTimelineDuration()
         await refreshVideoPreview()
         return true
     }
@@ -1153,6 +1170,7 @@ On Tuesday morning, Maya counted four blue lanterns near the station and said th
     func detachVideo() {
         guard let projectID = currentProjectID else { return }
         persistVideoProject()
+        videoTimelineDuration = 0
         if let transcriptClip = projectStore?.findClipID(projectID: projectID, videoPath: ""),
            let record = projectStore?.loadClip(clipID: transcriptClip) {
             currentClipID = transcriptClip
@@ -1214,23 +1232,26 @@ On Tuesday morning, Maya counted four blue lanterns near the station and said th
     /// The first moment at or after `earliest` where no voice clip is
     /// sounding — where a new clip can be laid down without overlapping.
     func nextFreeVoiceSlot(after earliest: Double) -> Double {
-        guard videoController.isLoaded, videoController.duration > 0 else {
-            return earliest
-        }
+        guard hasVideoClip else { return earliest }
         var target = max(0, earliest)
         for span in videoVoiceSpans {
             if target >= span.start && target < span.end {
                 target = span.end
             }
         }
-        return min(target, videoController.duration)
+        if videoTimelineDuration > 0 {
+            return min(target, videoTimelineDuration)
+        }
+        return target
     }
 
     /// Push clips that sit too close together apart: anything overlapping the
     /// previous clip (plus a small breathing gap) moves later. Recorded clips
     /// never move, so a growing take in front of one stays flagged instead.
     func autoGapVoiceClips(minimumGap: Double = 0.5) {
-        guard videoController.isLoaded, videoController.duration > 0 else { return }
+        // Re-timing only needs clip durations (in the store), not the player;
+        // clamp to the video length when it is known.
+        let total = videoTimelineDuration > 0 ? videoTimelineDuration : Double.greatestFiniteMagnitude
         let ordered = paragraphs
             .filter { $0.startTime != nil }
             .sorted { ($0.startTime ?? 0) < ($1.startTime ?? 0) }
@@ -1239,7 +1260,7 @@ On Tuesday morning, Maya counted four blue lanterns near the station and said th
         for paragraph in ordered {
             var start = paragraph.startTime ?? 0
             if let floorValue = floor, !paragraph.isRecorded, start < floorValue {
-                start = min(floorValue, videoController.duration)
+                start = min(floorValue, total)
             }
             let length = max(audioDuration(forParagraphID: paragraph.id), 0.5)
             floor = start + length + minimumGap
