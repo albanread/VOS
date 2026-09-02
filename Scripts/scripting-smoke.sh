@@ -13,8 +13,9 @@ sleep 1
 
 PASS=0; FAIL=0
 # Isolate the entire run in a throwaway project — every check below operates
-# on the current project, so this must come first.
-osascript -e 'tell application "VoiceOverStudio" to new project named "Smoke"' >/dev/null 2>&1 || true
+# on the current project, so this must come first. Reuse the existing Smoke
+# project when present so runs do not accumulate junk projects.
+osascript -e 'tell application "VoiceOverStudio" to switch project named "Smoke"' >/dev/null 2>&1   || osascript -e 'tell application "VoiceOverStudio" to new project named "Smoke"' >/dev/null 2>&1   || true
 sleep 1
 check() {  # check <label> <applescript>
   local label=$1 script=$2 out

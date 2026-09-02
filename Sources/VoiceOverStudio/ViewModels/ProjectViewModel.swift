@@ -261,6 +261,8 @@ On Tuesday morning, Maya counted four blue lanterns near the station and said th
             candidate = videoWorkspacesRootURL.appendingPathComponent("\(base) \(suffix)", isDirectory: true)
             suffix += 1
         }
+        // Hand out a folder that exists — TTS writes into it immediately.
+        try? FileManager.default.createDirectory(at: candidate, withIntermediateDirectories: true)
         return candidate
     }
 
@@ -2332,6 +2334,7 @@ On Tuesday morning, Maya counted four blue lanterns near the station and said th
         // Video clips use the full paragraph UUID as the filename: unique by
         // construction, so no two takes can ever overwrite each other.
         let outputDirectory = videoWorkspaceURL ?? documentsURL
+        try? FileManager.default.createDirectory(at: outputDirectory, withIntermediateDirectories: true)
         let uniqueName = "clip_\(id.uuidString).wav"
         let outputName = (videoWorkspaceURL != nil) ? uniqueName : filename
         let outputPath = outputDirectory.appendingPathComponent(outputName).path
