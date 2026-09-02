@@ -1584,24 +1584,34 @@ On Tuesday morning, Maya counted four blue lanterns near the station and said th
 
         isVideoExporting = true
         isProcessing = true
-        statusMessage = "Building video mix…"
+        statusMessage = "Mixing narration and copying the video (no re-encode)…"
         defer {
             isVideoExporting = false
             isProcessing = false
         }
 
-        let (composition, audioMix) = try await VideoTimelineService.makeComposition(
-            videoAsset: AVURLAsset(url: URL(fileURLWithPath: path)),
-            clips: clips,
-            originalAudioVolume: Float(videoOriginalAudioVolume)
-        )
-
-        statusMessage = "Exporting video (re-encodes for reliable audio)…"
-        try await VideoTimelineService.export(
-            composition: composition,
-            audioMix: audioMix,
-            to: destinationURL
-        )
+        let videoAsset = AVURLAsset(url: URL(fileURLWithPath: path))
+        do {
+            try await VideoTimelineService.remuxExport(
+                videoAsset: videoAsset,
+                clips: clips,
+                originalAudioVolume: Float(videoOriginalAudioVolume),
+                to: destinationURL
+            )
+        } catch {
+            // The faithful copy path failed; fall back to a full re-encode.
+            statusMessage = "Fast copy failed (\(error.localizedDescription)) — re-encoding instead…"
+            let (composition, audioMix) = try await VideoTimelineService.makeComposition(
+                videoAsset: videoAsset,
+                clips: clips,
+                originalAudioVolume: Float(videoOriginalAudioVolume)
+            )
+            try await VideoTimelineService.export(
+                composition: composition,
+                audioMix: audioMix,
+                to: destinationURL
+            )
+        }
 
         let anchoredWithoutAudio = paragraphs.filter { $0.startTime != nil && $0.audioPath == nil }.count
         let generatedWithoutAnchor = paragraphs.filter { $0.startTime == nil && $0.audioPath != nil }.count
@@ -1616,6 +1626,7 @@ On Tuesday morning, Maya counted four blue lanterns near the station and said th
         let suffix = notes.isEmpty ? "" : " — " + notes.joined(separator: "; ") + "."
         statusMessage = "Video exported: \(destinationURL.lastPathComponent)" + suffix
             + (newlyRecorded > 0 ? " \(newlyRecorded) clip(s) recorded and locked." : "")
+        NSWorkspace.shared.activateFileViewerSelecting([destinationURL])
         persistVideoProject()
         return suffix
     }
@@ -1700,6 +1711,7 @@ On Tuesday morning, Maya counted four blue lanterns near the station and said th
         let newlyRecorded = markExportedClipsRecorded()
         statusMessage = "Voice track exported: \(destinationURL.lastPathComponent)"
             + (newlyRecorded > 0 ? " \(newlyRecorded) clip(s) recorded and locked." : "")
+        NSWorkspace.shared.activateFileViewerSelecting([destinationURL])
         persistVideoProject()
         return destinationURL.path
     }

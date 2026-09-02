@@ -148,6 +148,104 @@ enum VideoTimelineService {
         return (composition, audioMix)
     }
 
+    /// Fast, faithful export: the source video's encoded bitstream is copied
+    /// untouched (so anything that plays the recording plays the export), and
+    /// the fully mixed narration — voices plus original audio at the mix
+    /// volume — rides along as one AAC track. Falls back to re-encoding only
+    /// if the copy path fails.
+    static func remuxExport(
+        videoAsset: AVURLAsset,
+        clips: [Clip],
+        originalAudioVolume: Float,
+        to outputURL: URL
+    ) async throws {
+        let duration = try await videoAsset.load(.duration)
+        let mixURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("vos-mix-\(UUID().uuidString).wav", isDirectory: false)
+        defer { try? FileManager.default.removeItem(at: mixURL) }
+
+        try await renderVoiceTrack(
+            clips: clips,
+            totalDuration: duration.seconds,
+            to: mixURL,
+            mixingOriginalAudioFrom: videoAsset,
+            originalAudioVolume: originalAudioVolume
+        )
+
+        guard let videoTrack = try await videoAsset.loadTracks(withMediaType: .video).first else {
+            throw VideoTimelineError.noVideoTrack
+        }
+        let mixAsset = AVURLAsset(url: mixURL)
+        guard let mixTrack = try await mixAsset.loadTracks(withMediaType: .audio).first else {
+            throw VideoTimelineError.noUsableVoiceClips
+        }
+
+        let reader = try AVAssetReader(asset: videoAsset)
+        let videoOutput = AVAssetReaderTrackOutput(track: videoTrack, outputSettings: nil)
+        videoOutput.alwaysCopiesSampleData = false
+        reader.add(videoOutput)
+
+        let audioReader = try AVAssetReader(asset: mixAsset)
+        let audioOutput = AVAssetReaderTrackOutput(track: mixTrack, outputSettings: nil)
+        audioOutput.alwaysCopiesSampleData = false
+        audioReader.add(audioOutput)
+
+        try? FileManager.default.removeItem(at: outputURL)
+        let writer = try AVAssetWriter(outputURL: outputURL, fileType: .mov)
+        let videoInput = AVAssetWriterInput(mediaType: .video, outputSettings: nil)
+        let audioInput = AVAssetWriterInput(mediaType: .audio, outputSettings: [
+            AVFormatIDKey: kAudioFormatMPEG4AAC,
+            AVEncoderBitRateKey: 160_000,
+            AVNumberOfChannelsKey: 1,
+            AVSampleRateKey: 48_000,
+        ])
+        writer.metadata = try await videoAsset.load(.metadata)
+        videoInput.transform = try await videoTrack.load(.preferredTransform)
+        writer.add(videoInput)
+        writer.add(audioInput)
+
+        guard reader.startReading(), audioReader.startReading() else {
+            throw VideoTimelineError.voiceTrackRenderFailed
+        }
+        writer.startWriting()
+        writer.startSession(atSourceTime: .zero)
+
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            let group = DispatchGroup()
+            group.enter()
+            videoInput.requestMediaDataWhenReady(on: DispatchQueue(label: "vos.remux.video")) {
+                while videoInput.isReadyForMoreMediaData {
+                    guard let sample = videoOutput.copyNextSampleBuffer() else {
+                        videoInput.markAsFinished()
+                        group.leave()
+                        return
+                    }
+                    videoInput.append(sample)
+                }
+            }
+            group.enter()
+            audioInput.requestMediaDataWhenReady(on: DispatchQueue(label: "vos.remux.audio")) {
+                while audioInput.isReadyForMoreMediaData {
+                    guard let sample = audioOutput.copyNextSampleBuffer() else {
+                        audioInput.markAsFinished()
+                        group.leave()
+                        return
+                    }
+                    audioInput.append(sample)
+                }
+            }
+            group.notify(queue: DispatchQueue.global()) {
+                writer.finishWriting {
+                    continuation.resume()
+                }
+            }
+        }
+
+        guard writer.status == .completed else {
+            throw writer.error ?? VideoTimelineError.voiceTrackRenderFailed
+        }
+    }
+
     /// Exports the mixed composition as .mov. HighestQuality re-encodes, which
     /// keeps the mixed audio in sync on variable-frame-rate screen captures.
     static func export(
@@ -175,7 +273,9 @@ enum VideoTimelineService {
     static func renderVoiceTrack(
         clips: [Clip],
         totalDuration seconds: Double,
-        to outputURL: URL
+        to outputURL: URL,
+        mixingOriginalAudioFrom originalAsset: AVURLAsset? = nil,
+        originalAudioVolume: Float = 0
     ) async throws {
         let renderFormat = AVAudioFormat(standardFormatWithSampleRate: 48_000, channels: 1)!
         let engine = AVAudioEngine()
@@ -217,6 +317,22 @@ enum VideoTimelineService {
             commonFormat: .pcmFormatFloat32,
             interleaved: false
         )
+
+        // Original video audio, scaled to the mix volume, joins the render as
+        // one more source — the result is a single track holding everything.
+        if let originalAsset, originalAudioVolume > 0.001,
+           let file = try? AVAudioFile(forReading: originalAsset.url) {
+            let frames = AVAudioFrameCount(file.length)
+            if frames > 0, let buffer = AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: frames) {
+                try file.read(into: buffer)
+                let player = AVAudioPlayerNode()
+                player.volume = originalAudioVolume
+                engine.attach(player)
+                engine.connect(player, to: engine.mainMixerNode, format: file.processingFormat)
+                player.scheduleBuffer(buffer, at: AVAudioTime(sampleTime: 0, atRate: file.processingFormat.sampleRate), options: [], completionHandler: nil)
+                players.append(player)
+            }
+        }
 
         try engine.start()
         players.forEach { $0.play() }
