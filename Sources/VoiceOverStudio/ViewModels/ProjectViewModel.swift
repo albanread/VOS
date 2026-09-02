@@ -7,6 +7,7 @@ import Foundation
 import SwiftUI
 import AVFoundation
 import AppKit
+import Combine
 import UniformTypeIdentifiers
 import Darwin
 
@@ -50,14 +51,20 @@ On Tuesday morning, Maya counted four blue lanterns near the station and said th
     @Published var selectedVoiceConfigurationID: String?
     @Published var isVoiceConfigurationPanePresented = false
     @Published var voiceConfigurationEditingParagraphID: UUID?
-    
+    @Published var isVideoTimelineSheetPresented = false
+    @Published var videoPath: String?
+    @Published var videoOriginalAudioVolume: Double = 0.0
+    @Published var isVideoExporting = false
+
     // Services
+    private let projectStore = ProjectStore()
     private let ttsService = TTSService()
     private let llmService = LLMService()
     private let modelUpdater = ModelUpdaterService()
     private let referenceVoiceRecorder = ReferenceVoiceRecorder()
     private let referenceVoiceEnhancementService = ReferenceVoiceEnhancementService()
     let abcJingleService = ABCJingleService()
+    let videoController = VideoTimelineController()
 
     private let llmDefaultFilename = "Llama-3.2-1B-Instruct-Q4_K_M.gguf"
     
@@ -214,6 +221,347 @@ On Tuesday morning, Maya counted four blue lanterns near the station and said th
         rootModelsURL.appendingPathComponent("jingle-timeline.json", isDirectory: false)
     }
 
+    private var cancellables = Set<AnyCancellable>()
+
+    static func sanitizedFolderName(from name: String) -> String {
+        let invalid = CharacterSet(charactersIn: "/:\\?*\"<>|")
+            .union(.controlCharacters)
+            .union(.newlines)
+        let cleaned = name.components(separatedBy: invalid).joined(separator: "-")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return cleaned.isEmpty ? "Untitled Video" : String(cleaned.prefix(80))
+    }
+
+    /// Per-video working folders: ~/Documents/voiceover/<video name>/ holds
+    /// that video's paragraph WAV cache; the database is the source of truth.
+    @Published private(set) var videoWorkspaceURL: URL?
+
+    /// A fresh workspace folder (numbered on name collisions); reopening an
+    /// existing clip reuses the folder recorded in the database.
+    func makeWorkspace(for videoURL: URL) -> URL {
+        try? FileManager.default.createDirectory(at: videoWorkspacesRootURL, withIntermediateDirectories: true)
+        let base = Self.sanitizedFolderName(from: videoURL.deletingPathExtension().lastPathComponent)
+        var candidate = videoWorkspacesRootURL.appendingPathComponent(base, isDirectory: true)
+        var suffix = 2
+        while FileManager.default.fileExists(atPath: candidate.path) {
+            candidate = videoWorkspacesRootURL.appendingPathComponent("\(base) \(suffix)", isDirectory: true)
+            suffix += 1
+        }
+        return candidate
+    }
+
+    private var videoWorkspacesRootURL: URL {
+        documentsURL.appendingPathComponent("voiceover", isDirectory: true)
+    }
+
+    // MARK: - Project & clip state
+
+    @Published var isNewProjectSheetPresented = false
+    @Published var isOpenProjectSheetPresented = false
+    @Published private(set) var recentProjects: [ProjectListing] = []
+
+    var activeProjectID: Int64? { currentProjectID }
+
+    @Published var projectName: String = "Untitled Project"
+
+    /// Rename the current project from UI edits. Empty or unchanged names are
+    /// ignored — never written back, so no observer feedback is possible.
+    func renameCurrentProject(to name: String) {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, trimmed != projectName else { return }
+        projectName = trimmed
+        if let id = currentProjectID {
+            projectStore?.renameProject(id: id, name: trimmed)
+        }
+    }
+    @Published private(set) var clipSummaries: [ClipSummary] = []
+
+    private var currentProjectID: Int64?
+    private var currentClipID: Int64?
+    /// Playhead target consumed by the timeline sheet when it opens.
+    var pendingTimelineSeek: Double?
+
+    var activeClip: ClipSummary? {
+        guard let currentClipID else { return nil }
+        return clipSummaries.first { $0.id == currentClipID }
+    }
+
+    var hasVideoClip: Bool {
+        activeClip?.isTranscript == false
+    }
+
+    private func ensureProject() -> Int64? {
+        if let currentProjectID {
+            return currentProjectID
+        }
+        let id = projectStore?.newProject(name: projectName) ?? 0
+        currentProjectID = id
+        return id
+    }
+
+    private func refreshClipSummaries() {
+        guard let projectID = currentProjectID else {
+            clipSummaries = []
+            return
+        }
+        clipSummaries = projectStore?.clips(inProject: projectID) ?? []
+    }
+
+    /// Every save lands here: the active clip (video or voice-only
+    /// transcript) is written transactionally with its voice blobs, so the
+    /// transcript editor and the timeline always share one truth.
+    func persistVideoProject() {
+        guard let projectID = ensureProject() else { return }
+        let clipPath = videoPath ?? ""
+        if clipPath.isEmpty {
+            currentClipID = projectStore?.upsertClip(projectID: projectID, record: ClipRecord(
+                clipID: currentClipID,
+                videoPath: "",
+                workspacePath: nil,
+                originalAudioVolume: videoOriginalAudioVolume,
+                paragraphs: paragraphs
+            ))
+        } else {
+            let workspace = videoWorkspaceURL ?? makeWorkspace(for: URL(fileURLWithPath: clipPath))
+            videoWorkspaceURL = workspace
+            currentClipID = projectStore?.upsertClip(projectID: projectID, record: ClipRecord(
+                clipID: currentClipID,
+                videoPath: clipPath,
+                workspacePath: workspace.path,
+                originalAudioVolume: videoOriginalAudioVolume,
+                paragraphs: paragraphs
+            ))
+        }
+        projectStore?.setActive(projectID: projectID, clipID: currentClipID)
+        refreshClipSummaries()
+    }
+
+    private func applyClipRecord(_ record: ClipRecord) {
+        paragraphs = record.paragraphs.map { paragraph in
+            var copy = paragraph
+            if copy.outputFilename.isEmpty {
+                copy.outputFilename = "clip_\(copy.id.uuidString).wav"
+            }
+            copy.isGenerating = false
+            return copy
+        }
+        videoOriginalAudioVolume = min(max(record.originalAudioVolume, 0), 1)
+        videoWorkspaceURL = record.workspacePath.map { URL(fileURLWithPath: $0) }
+        paragraphAudioDurations = record.voiceDurations
+        remapParagraphVoicesIfNeeded()
+        normalizeJingleTimelineItems()
+        paragraphs.removeAll {
+            $0.text == Self.starterParagraphText && $0.startTime == nil && $0.audioPath == nil
+        }
+        if record.videoPath.isEmpty {
+            // Voice-only clip: sequential timeline, nothing to tidy by anchor.
+        } else {
+            dedupeVideoTimeline()
+            purgeEmptyPlaceholders()
+        }
+    }
+
+    /// Launch restore: the current project and its active clip.
+    private func loadPersistedProject() {
+        guard let store = projectStore else { return }
+        currentProjectID = store.currentProjectID
+        if let projectID = currentProjectID, let summary = store.project(id: projectID) {
+            projectName = summary.name
+        }
+        refreshClipSummaries()
+        if let clipID = store.currentClipID, let record = store.loadClip(clipID: clipID) {
+            currentClipID = clipID
+            if record.videoPath.isEmpty {
+                videoPath = nil
+            } else {
+                videoPath = record.videoPath
+            }
+            applyClipRecord(record)
+        }
+        refreshRecentProjects()
+    }
+
+    /// Switch to another clip of this project (from the clip switcher).
+    func switchToClip(_ clipID: Int64) {
+        guard clipID != currentClipID,
+              let store = projectStore,
+              let record = store.loadClip(clipID: clipID)
+        else { return }
+        // File the outgoing clip before switching.
+        persistVideoProject()
+        currentClipID = clipID
+        if record.videoPath.isEmpty {
+            videoPath = nil
+            videoWorkspaceURL = nil
+            videoController.unload()
+        } else {
+            videoPath = record.videoPath
+            Task {
+                await videoController.load(url: URL(fileURLWithPath: record.videoPath))
+                await refreshVideoPreview()
+            }
+        }
+        applyClipRecord(record)
+        projectStore?.setActive(projectID: currentProjectID, clipID: clipID)
+        refreshClipSummaries()
+        statusMessage = record.videoPath.isEmpty
+            ? "Switched to the voice-only transcript."
+            : "Switched to clip \(URL(fileURLWithPath: record.videoPath).lastPathComponent)."
+    }
+
+    func refreshRecentProjects() {
+        recentProjects = Array((projectStore?.listProjects() ?? []).prefix(8))
+    }
+
+    /// Every project, newest first — the Open Project dialog.
+    func recentProjectListings() -> [ProjectListing] {
+        projectStore?.listProjects() ?? []
+    }
+
+    /// Open another project: file the current one, restore the target and
+    /// its most relevant clip (its active clip, else the first video clip).
+    func openProject(_ projectID: Int64) {
+        guard let store = projectStore else { return }
+        if projectID == currentProjectID {
+            // Opening what is already open is acknowledged, never silent.
+            store.touchProject(id: projectID)
+            refreshRecentProjects()
+            statusMessage = "Project \"\(projectName)\" is already open."
+            return
+        }
+        persistVideoProject()
+        currentProjectID = projectID
+        if let summary = store.project(id: projectID) {
+            projectName = summary.name
+        }
+        store.touchProject(id: projectID)
+
+        let clipsInProject = store.clips(inProject: projectID)
+        var clipID = store.currentClipID
+        if let candidate = clipID, !clipsInProject.contains(where: { $0.id == candidate }) {
+            clipID = nil
+        }
+        if clipID == nil {
+            clipID = clipsInProject.first(where: { !$0.isTranscript })?.id ?? clipsInProject.first?.id
+        }
+
+        if let cid = clipID, let record = store.loadClip(clipID: cid) {
+            currentClipID = cid
+            if record.videoPath.isEmpty {
+                videoPath = nil
+                videoWorkspaceURL = nil
+                videoController.unload()
+            } else {
+                videoPath = record.videoPath
+            }
+            applyClipRecord(record)
+            if videoPath != nil {
+                Task {
+                    await videoController.load(url: URL(fileURLWithPath: record.videoPath))
+                    await refreshVideoPreview()
+                }
+            }
+        } else {
+            currentClipID = nil
+            videoPath = nil
+            videoWorkspaceURL = nil
+            videoController.unload()
+            paragraphs = []
+            paragraphAudioDurations = [:]
+            addStarterParagraphIfEmpty()
+        }
+        store.setActive(projectID: projectID, clipID: currentClipID)
+        refreshClipSummaries()
+        refreshRecentProjects()
+        statusMessage = "Opened project \"\(projectName)\"."
+    }
+
+    /// Start a fresh project; the old one stays in the database.
+    func startNewProject(named name: String) {
+        persistVideoProject()
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let id = projectStore?.newProject(name: trimmed.isEmpty ? "Untitled Project" : trimmed) ?? 0
+        currentProjectID = id
+        currentClipID = nil
+        projectName = trimmed.isEmpty ? "Untitled Project" : trimmed
+        videoPath = nil
+        videoWorkspaceURL = nil
+        videoController.unload()
+        paragraphs = []
+        paragraphAudioDurations = [:]
+        addStarterParagraphIfEmpty()
+        refreshClipSummaries()
+        refreshRecentProjects()
+        statusMessage = "New project \"\(projectName)\". Attach a video or write a voice-only transcript."
+    }
+
+    // MARK: - Unified timeline (every voice is over a timeline)
+
+    /// Start of a paragraph on its clip's timeline: anchored when a video
+    /// clip is active, otherwise stacked sequentially (voice-only podcasts
+    /// run end to end with their gaps).
+    func timelineStart(forParagraphID id: UUID) -> Double? {
+        guard let index = paragraphs.firstIndex(where: { $0.id == id }) else { return nil }
+        if hasVideoClip, let anchored = paragraphs[index].startTime {
+            return anchored
+        }
+        var cursor = 0.0
+        for paragraph in paragraphs[..<index] {
+            cursor += audioDuration(forParagraphID: paragraph.id) + max(0, paragraph.gapDuration)
+        }
+        return cursor
+    }
+
+    func timelineEnd(forParagraphID id: UUID) -> Double? {
+        guard let start = timelineStart(forParagraphID: id) else { return nil }
+        return start + audioDuration(forParagraphID: id)
+    }
+
+    /// The largest free span on the active clip's timeline where a new voice
+    /// clip could be inserted. Voice-only clips always have room.
+    func largestFreeTimelineGap() -> Double? {
+        guard hasVideoClip, videoController.isLoaded, videoController.duration > 0 else {
+            return nil // voice-only: unbounded
+        }
+        let spans = videoVoiceSpans.sorted { $0.start < $1.start }
+        var best = 0.0
+        var cursor = 0.0
+        for span in spans {
+            if span.start > cursor {
+                best = max(best, span.start - cursor)
+            }
+            cursor = max(cursor, span.end)
+        }
+        best = max(best, videoController.duration - cursor)
+        return best
+    }
+
+    /// Whether a new clip can be inserted into the active clip's timeline.
+    /// Video clips are finite, so insertion needs a real gap; voice-only
+    /// timelines are open-ended.
+    func canInsertNewVoiceClip() -> Bool {
+        if !hasVideoClip { return true }
+        guard let gap = largestFreeTimelineGap() else { return true }
+        return gap >= 1.0
+    }
+
+    var insertionBlockedMessage: String? {
+        guard hasVideoClip, !canInsertNewVoiceClip() else { return nil }
+        return "The video timeline is full — every moment is voiced. Move or remove a clip first."
+    }
+
+    /// Autosave the attached video's project whenever its paragraphs change,
+    /// coalescing bursts of edits (typing, anchoring, generation) by a second.
+    private func startVideoProjectAutosave() {
+        $paragraphs
+            .dropFirst(2)
+            .debounce(for: .seconds(1.0), scheduler: DispatchQueue.main)
+            .sink { [weak self] _ in
+                self?.persistVideoProject()
+            }
+            .store(in: &cancellables)
+    }
+
     var jingleCacheDirectoryURL: URL {
         rootModelsURL.appendingPathComponent("jingles", isDirectory: true)
     }
@@ -261,10 +609,12 @@ On Tuesday morning, Maya counted four blue lanterns near the station and said th
         loadVoiceConfigurationStore()
         loadJingleCardStore()
         loadJingleTimelineStore()
+        loadPersistedProject()
         loadReferenceVoiceProfile()
         refreshVoiceOptions()
+        startVideoProjectAutosave()
         if paragraphs.isEmpty {
-            addParagraph()
+            addStarterParagraphIfEmpty()
         }
         if requiredModelArtifactsPresent() {
             initializeEngines()
@@ -649,6 +999,620 @@ On Tuesday morning, Maya counted four blue lanterns near the station and said th
         try report.write(to: reportURL, atomically: true, encoding: .utf8)
     }
 
+    // MARK: - Video timeline
+
+    func openVideoTimeline() {
+        isVideoTimelineSheetPresented = true
+        Task { await prepareVideoPreview() }
+    }
+
+    /// Open the timeline and (for video clips) land the playhead on a
+    /// specific paragraph's start.
+    func openTimeline(at seconds: Double?) {
+        pendingTimelineSeek = seconds
+        openVideoTimeline()
+    }
+
+    /// Loads (or clears) the attached video and rebuilds preview playback.
+    /// Voice-only clips get a podcast-style audio timeline instead.
+    func prepareVideoPreview() async {
+        if let path = videoPath, FileManager.default.fileExists(atPath: path) {
+            await videoController.load(url: URL(fileURLWithPath: path))
+        } else {
+            if videoPath != nil {
+                videoPath = nil
+                projectStore?.setActive(projectID: currentProjectID, clipID: nil)
+            }
+            await presentVoiceOnlyPreview()
+        }
+        await refreshVideoPreview()
+        await refreshParagraphAudioDurations()
+    }
+
+    /// The sequential voice timeline: each paragraph at its computed slot
+    /// (ungenerated ones as estimated silence), so what you see is what
+    /// plays.
+    func presentVoiceOnlyPreview() async {
+        let entries: [(audioURL: URL?, length: Double, gapAfter: Double)] = paragraphs.map { paragraph in
+            let path = paragraph.audioPath
+            return (
+                audioURL: path.map { URL(fileURLWithPath: $0) },
+                length: audioDuration(forParagraphID: paragraph.id),
+                gapAfter: max(0, paragraph.gapDuration)
+            )
+        }
+        guard let built = await VideoTimelineService.makeVoiceOnlyComposition(entries: entries) else {
+            videoController.unload()
+            return
+        }
+        videoController.presentVoiceOnly(
+            item: AVPlayerItem(asset: built.composition),
+            duration: built.duration
+        )
+    }
+
+    func refreshVideoPreview() async {
+        if hasVideoClip, videoPath != nil {
+            await videoController.rebuildPreview(
+                clips: videoAnchoredClips(),
+                originalAudioVolume: Float(videoOriginalAudioVolume)
+            )
+        } else if !paragraphs.isEmpty {
+            await presentVoiceOnlyPreview()
+        }
+    }
+
+    func attachVideo() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = false
+        panel.canChooseFiles = true
+        panel.allowsMultipleSelection = false
+        setAllowedContentTypes(panel, extensions: ["mov", "mp4", "m4v"])
+        if panel.runModal() == .OK, let url = panel.url {
+            Task { _ = await attachVideoFile(at: url) }
+        }
+    }
+
+    /// Shared attach path for the open panel, drag-and-drop, and Apple Events.
+    /// Returns false (and sets a status message) when the file is unreadable.
+    @discardableResult
+    func attachVideoFile(at url: URL) async -> Bool {
+        let previousVideoPath = videoPath
+        let previousWorkspace = videoWorkspaceURL
+        await videoController.load(url: url)
+        guard videoController.isLoaded else {
+            statusMessage = videoController.loadError ?? "Could not read video: \(url.lastPathComponent)"
+            return false
+        }
+
+        // File the outgoing working set before switching away from it —
+        // whether it belonged to another video or to the voice-only clip.
+        if previousVideoPath != url.path {
+            persistVideoProject()
+        }
+
+        let projectID = ensureProject()
+        videoPath = url.path
+
+        // Attaching a video inside a project adds (or reopens) a clip.
+        if previousVideoPath != url.path {
+            if let clipID = projectStore?.findClipID(projectID: projectID ?? 0, videoPath: url.path),
+               let record = projectStore?.loadClip(clipID: clipID) {
+                currentClipID = clipID
+                applyClipRecord(record)
+                statusMessage = "Clip reopened: \(url.lastPathComponent) — \(paragraphs.count) voice-over\(paragraphs.count == 1 ? "" : "s")."
+            } else {
+                // Fresh clip: keep the writing, drop timings that belonged to
+                // a different clip's timeline.
+                currentClipID = nil
+                videoWorkspaceURL = makeWorkspace(for: url)
+                for index in paragraphs.indices {
+                    paragraphs[index].startTime = nil
+                }
+                statusMessage = "Clip added: \(url.lastPathComponent). Working folder: \(videoWorkspaceURL?.path ?? "")."
+            }
+            projectStore?.setActive(projectID: projectID, clipID: currentClipID)
+            refreshClipSummaries()
+        } else {
+            statusMessage = "Video attached: \(url.lastPathComponent)"
+        }
+
+        await refreshVideoPreview()
+        return true
+    }
+
+    /// Drag-and-drop entry point from the sheet or the main window.
+    func attachVideoDropped(_ url: URL) async {
+        guard VideoTimelineService.isMovieURL(url) else {
+            statusMessage = "Unsupported file: \(url.lastPathComponent). Drop a .mov, .mp4, or .m4v video."
+            return
+        }
+        if await attachVideoFile(at: url) {
+            openVideoTimeline()
+        }
+    }
+
+    /// "Detach" now means: switch back to the project's voice-only clip.
+    /// The video clip stays in the project and in the database.
+    func detachVideo() {
+        guard let projectID = currentProjectID else { return }
+        persistVideoProject()
+        if let transcriptClip = projectStore?.findClipID(projectID: projectID, videoPath: ""),
+           let record = projectStore?.loadClip(clipID: transcriptClip) {
+            currentClipID = transcriptClip
+            videoPath = nil
+            videoWorkspaceURL = nil
+            videoController.unload()
+            applyClipRecord(record)
+        } else {
+            // No voice-only clip yet: the current working set becomes it.
+            videoPath = nil
+            currentClipID = nil
+            videoWorkspaceURL = nil
+            videoController.unload()
+            for index in paragraphs.indices {
+                paragraphs[index].startTime = nil
+                paragraphs[index].isRecorded = false
+            }
+            persistVideoProject()
+        }
+        projectStore?.setActive(projectID: projectID, clipID: currentClipID)
+        refreshClipSummaries()
+        statusMessage = "Switched to the voice-only transcript. The video clip stays in this project."
+    }
+
+    func commitVideoVolume() {
+        persistVideoProject()
+        Task { await refreshVideoPreview() }
+    }
+
+    /// Paragraphs that have both a video anchor and generated audio, sorted by
+    /// anchor time — exactly what export and preview mix into the video.
+    func videoAnchoredClips() -> [VideoTimelineService.Clip] {
+        guard videoPath != nil else { return [] }
+        return paragraphs.compactMap { paragraph in
+            guard let audioPath = paragraph.audioPath,
+                  let start = paragraph.startTime else { return nil }
+            return VideoTimelineService.Clip(audioURL: URL(fileURLWithPath: audioPath), startSeconds: start)
+        }
+        .sorted { $0.startSeconds < $1.startSeconds }
+    }
+
+    /// Every anchored paragraph as an occupied span of the voice track,
+    /// whether its audio is generated (measured length) or not (estimate).
+    struct VideoVoiceSpan {
+        let id: UUID
+        let start: Double
+        let end: Double
+    }
+
+    var videoVoiceSpans: [VideoVoiceSpan] {
+        paragraphs.compactMap { paragraph in
+            guard let start = paragraph.startTime else { return nil }
+            let length = max(audioDuration(forParagraphID: paragraph.id), 0.5)
+            return VideoVoiceSpan(id: paragraph.id, start: start, end: start + length)
+        }
+        .sorted { $0.start < $1.start }
+    }
+
+    /// The first moment at or after `earliest` where no voice clip is
+    /// sounding — where a new clip can be laid down without overlapping.
+    func nextFreeVoiceSlot(after earliest: Double) -> Double {
+        guard videoController.isLoaded, videoController.duration > 0 else {
+            return earliest
+        }
+        var target = max(0, earliest)
+        for span in videoVoiceSpans {
+            if target >= span.start && target < span.end {
+                target = span.end
+            }
+        }
+        return min(target, videoController.duration)
+    }
+
+    /// Push clips that sit too close together apart: anything overlapping the
+    /// previous clip (plus a small breathing gap) moves later. Recorded clips
+    /// never move, so a growing take in front of one stays flagged instead.
+    func autoGapVoiceClips(minimumGap: Double = 0.5) {
+        guard videoController.isLoaded, videoController.duration > 0 else { return }
+        let ordered = paragraphs
+            .filter { $0.startTime != nil }
+            .sorted { ($0.startTime ?? 0) < ($1.startTime ?? 0) }
+
+        var floor: Double?
+        for paragraph in ordered {
+            var start = paragraph.startTime ?? 0
+            if let floorValue = floor, !paragraph.isRecorded, start < floorValue {
+                start = min(floorValue, videoController.duration)
+            }
+            let length = max(audioDuration(forParagraphID: paragraph.id), 0.5)
+            floor = start + length + minimumGap
+            if start != (paragraph.startTime ?? 0),
+               let index = paragraphs.firstIndex(where: { $0.id == paragraph.id }) {
+                paragraphs[index].startTime = start
+            }
+        }
+    }
+
+    /// Live position update while a clip is dragged (no preview rebuild).
+    func moveParagraphClip(_ id: UUID, to seconds: Double) {
+        guard videoController.isLoaded,
+              let index = paragraphs.firstIndex(where: { $0.id == id }),
+              paragraphs[index].startTime != nil,
+              !paragraphs[index].isRecorded
+        else { return }
+        paragraphs[index].startTime = max(0, min(seconds, videoController.duration))
+    }
+
+    /// Finish a clip drag: separate anything now too close and rebuild the
+    /// preview once.
+    func settleParagraphClip(_ id: UUID) {
+        autoGapVoiceClips()
+        Task { await refreshVideoPreview() }
+    }
+
+    /// Let a recorded clip be changed again. Re-run spacing right away: while
+    /// it was locked, neighbours could not be pushed apart around it.
+    func unlockParagraph(_ id: UUID) {
+        guard let index = paragraphs.firstIndex(where: { $0.id == id }),
+              paragraphs[index].isRecorded
+        else { return }
+        paragraphs[index].isRecorded = false
+        autoGapVoiceClips()
+        Task { await refreshVideoPreview() }
+        statusMessage = "Clip \(index + 1) unlocked — it can be moved and changed again; too-close clips were re-spaced."
+    }
+
+    /// Anchor a paragraph at `seconds` into the attached video. Returns the
+    /// clamped time that was set, or nil when no usable video is loaded.
+    @discardableResult
+    func setParagraphStart(_ id: UUID, at seconds: Double) -> Double? {
+        guard videoController.isLoaded else {
+            statusMessage = "Attach a video before anchoring paragraphs."
+            return nil
+        }
+        guard let index = paragraphs.firstIndex(where: { $0.id == id }) else { return nil }
+        if paragraphs[index].isRecorded {
+            statusMessage = "Clip \(index + 1) is recorded to the video — unlock it before moving it."
+            return nil
+        }
+        let clamped = max(0, min(seconds, videoController.duration))
+        paragraphs[index].startTime = clamped
+        autoGapVoiceClips()
+        statusMessage = "Paragraph \(index + 1) anchored at \(Paragraph.timecode(paragraphs[index].startTime ?? clamped))."
+        Task { await refreshVideoPreview() }
+        return clamped
+    }
+
+    /// Measured WAV durations per paragraph, refreshed after generation and
+    /// when a project loads. The voice track draws clips from these; text
+    /// without audio yet shows an estimate.
+    @Published var paragraphAudioDurations: [UUID: Double] = [:]
+
+    /// Rough speaking length for ungenerated text: ~2.6 words per second at
+    /// normal speed, adjusted by the paragraph's speed preset.
+    static func estimatedSpeechDuration(for text: String, speedRate: Float) -> Double {
+        let words = Double(text.split(whereSeparator: \.isWhitespace).count)
+        guard words > 0 else { return 1.0 }
+        let rate = max(0.5, speedRate)
+        return max(0.8, words / (2.6 * Double(rate)) + 0.3)
+    }
+
+    /// The voice clip's length on the track: the measured audio duration when
+    /// the WAV exists, otherwise the text estimate.
+    func audioDuration(forParagraphID id: UUID) -> Double {
+        guard let paragraph = paragraphs.first(where: { $0.id == id }) else { return 0 }
+        if let measured = paragraphAudioDurations[id] {
+            return measured
+        }
+        return Self.estimatedSpeechDuration(for: paragraph.text, speedRate: paragraph.speed.rate)
+    }
+
+    func hasMeasuredAudioDuration(_ id: UUID) -> Bool {
+        paragraphAudioDurations[id] != nil
+    }
+
+    func measureAudioDuration(for id: UUID) async {
+        guard let paragraph = paragraphs.first(where: { $0.id == id }),
+              let path = paragraph.audioPath,
+              FileManager.default.fileExists(atPath: path)
+        else { return }
+        let asset = AVURLAsset(url: URL(fileURLWithPath: path))
+        if let seconds = try? await asset.load(.duration).seconds, seconds.isFinite, seconds > 0 {
+            paragraphAudioDurations[id] = seconds
+        }
+    }
+
+    func refreshParagraphAudioDurations() async {
+        for paragraph in paragraphs where paragraph.audioPath != nil {
+            await measureAudioDuration(for: paragraph.id)
+        }
+    }
+
+    /// Create a new, empty voice clip at the next free segment at or after
+    /// the playhead — the in-timeline writing flow. Reuses an existing empty
+    /// clip already sitting at that spot instead of stacking a duplicate, and
+    /// drops the untouched starter paragraph so it never shows up as a ghost.
+    @discardableResult
+    func createParagraphAtPlayhead() -> UUID? {
+        // Voice-only clips append sequentially — the timeline places them.
+        guard hasVideoClip else {
+            if let blocked = insertionBlockedMessage {
+                statusMessage = blocked
+                return nil
+            }
+            paragraphs.removeAll { paragraph in
+                paragraph.text == Self.starterParagraphText
+                    && paragraph.startTime == nil
+                    && paragraph.audioPath == nil
+                    && !paragraph.isGenerating
+            }
+            var paragraph = Paragraph(text: "", voiceID: defaultVoiceConfigurationID())
+            paragraph.outputFilename = "clip_\(paragraph.id.uuidString).wav"
+            paragraph.gapDuration = defaultGap
+            paragraphs.append(paragraph)
+            Task { await refreshVideoPreview() }
+            return paragraph.id
+        }
+
+        guard videoController.isLoaded else {
+            statusMessage = "Attach a video before adding text."
+            return nil
+        }
+
+        // Drop the pristine default paragraph ("New paragraph text here.")
+        // once real clips exist for this video.
+        paragraphs.removeAll { paragraph in
+            paragraph.text == Self.starterParagraphText
+                && paragraph.startTime == nil
+                && paragraph.audioPath == nil
+                && !paragraph.isGenerating
+        }
+
+        // New clips always go to the right: past the red bar AND past the end
+        // of the last clip on the track, then into free space.
+        let lastClipEnd = videoVoiceSpans.last?.end ?? 0
+        let earliest = max(videoController.playbackTime, lastClipEnd + 0.5)
+        let target = nextFreeVoiceSlot(after: (earliest * 10).rounded() / 10)
+
+        // An empty, ungenerated clip already parked at the target IS the new
+        // clip — reuse it rather than overlapping a duplicate.
+        if let existing = paragraphs.first(where: { paragraph in
+            guard paragraph.startTime != nil, paragraph.audioPath == nil,
+                  paragraph.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            else { return false }
+            return abs((paragraph.startTime ?? 0) - target) < 0.15
+        }) {
+            videoController.seek(to: existing.startTime ?? target)
+            statusMessage = "Reused the empty clip at \(Paragraph.timecode(target)) — type its narration."
+            return existing.id
+        }
+
+        var paragraph = Paragraph(text: "", voiceID: defaultVoiceConfigurationID())
+        if paragraph.outputFilename.isEmpty {
+            paragraph.outputFilename = "para_\(paragraph.id.uuidString.prefix(8)).wav"
+        }
+        paragraph.gapDuration = defaultGap
+        paragraph.startTime = target
+        paragraphs.append(paragraph)
+        statusMessage = "New clip at \(Paragraph.timecode(target)) — type its narration, then press + to continue."
+        Task { await refreshVideoPreview() }
+        return paragraph.id
+    }
+
+    /// Empty anchored clips with no audio are writing placeholders: drop them
+    /// once they are no longer the clip being written, so abandoned "+" presses
+    /// never linger on the track.
+    func purgeEmptyPlaceholders(keeping keptID: UUID? = nil) {
+        paragraphs.removeAll { paragraph in
+            paragraph.id != keptID
+                && paragraph.startTime != nil
+                && paragraph.audioPath == nil
+                && paragraph.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                && !paragraph.isGenerating
+        }
+    }
+
+    /// Remove anchored, empty, ungenerated clips that collide with another
+    /// anchored clip — leftovers from overlap-era edits that would otherwise
+    /// show as confusing overlapping tracks.
+    func dedupeVideoTimeline() {
+        let anchored = paragraphs.filter { $0.startTime != nil }
+        let removals = anchored.filter { paragraph in
+            guard paragraph.audioPath == nil,
+                  paragraph.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            else { return false }
+            return anchored.contains { other in
+                other.id != paragraph.id
+                    && other.startTime != nil
+                    && abs((other.startTime ?? 0) - (paragraph.startTime ?? 0)) < 0.15
+                    && (other.audioPath != nil
+                        || !other.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+        }
+        guard !removals.isEmpty else { return }
+        let ids = Set(removals.map(\.id))
+        paragraphs.removeAll { ids.contains($0.id) }
+    }
+
+    func clearParagraphStart(_ id: UUID) {
+        guard let index = paragraphs.firstIndex(where: { $0.id == id }) else { return }
+        guard paragraphs[index].startTime != nil else { return }
+        paragraphs[index].startTime = nil
+        Task { await refreshVideoPreview() }
+    }
+
+    func clearAllParagraphStarts() {
+        guard paragraphs.contains(where: { $0.startTime != nil }) else { return }
+        for index in paragraphs.indices {
+            paragraphs[index].startTime = nil
+        }
+        statusMessage = "Cleared all paragraph anchors."
+        Task { await refreshVideoPreview() }
+    }
+
+    func exportVideoWithVoiceOver() async {
+        guard !isVideoExporting else { return }
+        guard let path = videoPath, FileManager.default.fileExists(atPath: path) else {
+            statusMessage = "Attach a video before exporting."
+            return
+        }
+        guard !videoAnchoredClips().isEmpty else {
+            statusMessage = "Anchor at least one paragraph (with generated audio) before exporting."
+            return
+        }
+
+        let panel = NSSavePanel()
+        panel.directoryURL = videoWorkspaceURL ?? documentsURL
+        setAllowedContentTypes(panel, extensions: ["mov"])
+        let baseName = URL(fileURLWithPath: path)
+            .deletingPathExtension()
+            .lastPathComponent
+        panel.nameFieldStringValue = "\(baseName)-voiceover.mov"
+        guard panel.runModal() == .OK, let destinationURL = panel.url else { return }
+
+        do {
+            _ = try await scriptExportVideo(to: destinationURL)
+        } catch {
+            statusMessage = "Video export failed: \(error.localizedDescription)"
+        }
+    }
+
+    /// Shared video export path: UI reaches it after its save panel, Apple
+    /// Events supply the destination directly. Returns export notes ("" when
+    /// every paragraph took part).
+    @discardableResult
+    func scriptExportVideo(to destinationURL: URL) async throws -> String {
+        guard let path = videoPath, FileManager.default.fileExists(atPath: path) else {
+            throw ScriptingError.videoNotAttached
+        }
+        let clips = videoAnchoredClips()
+        guard !clips.isEmpty else {
+            throw ScriptingError.noAnchoredVideoClips
+        }
+
+        isVideoExporting = true
+        isProcessing = true
+        statusMessage = "Building video mix…"
+        defer {
+            isVideoExporting = false
+            isProcessing = false
+        }
+
+        let (composition, audioMix) = try await VideoTimelineService.makeComposition(
+            videoAsset: AVURLAsset(url: URL(fileURLWithPath: path)),
+            clips: clips,
+            originalAudioVolume: Float(videoOriginalAudioVolume)
+        )
+
+        statusMessage = "Exporting video (re-encodes for reliable audio)…"
+        try await VideoTimelineService.export(
+            composition: composition,
+            audioMix: audioMix,
+            to: destinationURL
+        )
+
+        let anchoredWithoutAudio = paragraphs.filter { $0.startTime != nil && $0.audioPath == nil }.count
+        let generatedWithoutAnchor = paragraphs.filter { $0.startTime == nil && $0.audioPath != nil }.count
+        var notes: [String] = []
+        if anchoredWithoutAudio > 0 {
+            notes.append("\(anchoredWithoutAudio) anchored paragraph(s) had no audio and were skipped")
+        }
+        if generatedWithoutAnchor > 0 {
+            notes.append("\(generatedWithoutAnchor) generated paragraph(s) were not anchored")
+        }
+        let newlyRecorded = markExportedClipsRecorded()
+        let suffix = notes.isEmpty ? "" : " — " + notes.joined(separator: "; ") + "."
+        statusMessage = "Video exported: \(destinationURL.lastPathComponent)" + suffix
+            + (newlyRecorded > 0 ? " \(newlyRecorded) clip(s) recorded and locked." : "")
+        persistVideoProject()
+        return suffix
+    }
+
+    /// Clips included in an export are committed: mark them recorded (locked)
+    /// and return how many changed state.
+    @discardableResult
+    func markExportedClipsRecorded() -> Int {
+        var changed = 0
+        for index in paragraphs.indices
+        where paragraphs[index].audioPath != nil
+            && paragraphs[index].startTime != nil
+            && !paragraphs[index].isRecorded {
+            paragraphs[index].isRecorded = true
+            changed += 1
+        }
+        return changed
+    }
+
+    func exportVoiceTrackOnly() async {
+        guard !isVideoExporting else { return }
+        guard let path = videoPath, FileManager.default.fileExists(atPath: path) else {
+            statusMessage = "Attach a video before exporting the voice track."
+            return
+        }
+        guard !videoAnchoredClips().isEmpty else {
+            statusMessage = "Anchor at least one paragraph (with generated audio) first."
+            return
+        }
+
+        let panel = NSSavePanel()
+        panel.directoryURL = videoWorkspaceURL ?? documentsURL
+        setAllowedContentTypes(panel, extensions: ["wav"])
+        let baseName = URL(fileURLWithPath: path)
+            .deletingPathExtension()
+            .lastPathComponent
+        panel.nameFieldStringValue = "\(baseName)-voice-track.wav"
+        guard panel.runModal() == .OK, let destinationURL = panel.url else { return }
+
+        do {
+            _ = try await scriptExportVoiceTrack(to: destinationURL)
+        } catch {
+            statusMessage = "Voice track export failed: \(error.localizedDescription)"
+        }
+    }
+
+    /// Voice-track-only export: a WAV spanning the video's full duration with
+    /// each voice mixed in at its anchor time and silence elsewhere, ready to
+    /// attach in a separate video editor. The video is only the timing
+    /// reference; none of its audio is included.
+    @discardableResult
+    func scriptExportVoiceTrack(to destinationURL: URL) async throws -> String {
+        guard let path = videoPath, FileManager.default.fileExists(atPath: path) else {
+            throw ScriptingError.videoNotAttached
+        }
+        let clips = videoAnchoredClips()
+        guard !clips.isEmpty else {
+            throw ScriptingError.noAnchoredVideoClips
+        }
+        let duration = try await AVURLAsset(url: URL(fileURLWithPath: path)).load(.duration).seconds
+        guard duration.isFinite, duration > 0 else {
+            throw NSError(
+                domain: "ProjectViewModel",
+                code: -43,
+                userInfo: [NSLocalizedDescriptionKey: "The attached video reports no usable duration."]
+            )
+        }
+
+        isVideoExporting = true
+        isProcessing = true
+        statusMessage = "Rendering voice track…"
+        defer {
+            isVideoExporting = false
+            isProcessing = false
+        }
+
+        try await VideoTimelineService.renderVoiceTrack(
+            clips: clips,
+            totalDuration: duration,
+            to: destinationURL
+        )
+        let newlyRecorded = markExportedClipsRecorded()
+        statusMessage = "Voice track exported: \(destinationURL.lastPathComponent)"
+            + (newlyRecorded > 0 ? " \(newlyRecorded) clip(s) recorded and locked." : "")
+        persistVideoProject()
+        return destinationURL.path
+    }
+
     private func defaultVoiceConfigurationID() -> String {
         if let selectedVoiceConfigurationID,
            voiceConfigurations.contains(where: { $0.id == selectedVoiceConfigurationID }) {
@@ -828,8 +1792,20 @@ On Tuesday morning, Maya counted four blue lanterns near the station and said th
         )
     }
 
+    static let starterParagraphText = "New paragraph text here."
+
+    /// The launch starter ignores timeline capacity — an empty editor is
+    /// never the right answer to a full video.
+    private func addStarterParagraphIfEmpty() {
+        guard paragraphs.isEmpty else { return }
+        var paragraph = Paragraph(text: Self.starterParagraphText, voiceID: defaultVoiceConfigurationID())
+        paragraph.outputFilename = "clip_\(paragraph.id.uuidString).wav"
+        paragraph.gapDuration = defaultGap
+        paragraphs.append(paragraph)
+    }
+
     func addParagraph() {
-        var p = Paragraph(text: "New paragraph text here.", voiceID: defaultVoiceConfigurationID())
+        var p = Paragraph(text: Self.starterParagraphText, voiceID: defaultVoiceConfigurationID())
         if p.outputFilename.isEmpty {
             p.outputFilename = "para_\(p.id.uuidString.prefix(8)).wav"
         }
@@ -1262,6 +2238,7 @@ On Tuesday morning, Maya counted four blue lanterns near the station and said th
         copy.id = UUID()
         copy.audioPath = nil
         copy.isGenerating = false
+        copy.startTime = nil
         copy.outputFilename = "para_\(copy.id.uuidString.prefix(8)).wav"
         paragraphs.insert(copy, at: index + 1)
     }
@@ -1295,9 +2272,26 @@ On Tuesday morning, Maya counted four blue lanterns near the station and said th
             return
         }
         guard let index = paragraphs.firstIndex(where: { $0.id == id }) else { return }
-        
-        // Auto-initialize if needed logic could go here
-        
+
+        if paragraphs[index].isRecorded {
+            statusMessage = "Clip \(index + 1) is recorded to the video — unlock it before regenerating."
+            return
+        }
+
+        // Qwen3-TTS traps the process on empty or near-empty text: the ChatML
+        // template adds ~8 tokens around the text and the model slices its
+        // embedding as 4..<(count-5), which is an invalid range — and a hard
+        // SIGTRAP — once the text contributes fewer than ~2 tokens. Reject it
+        // here instead of crashing.
+        let trimmedText = paragraphs[index].text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let wordCount = trimmedText.split(whereSeparator: \.isWhitespace).count
+        guard wordCount >= 2 else {
+            statusMessage = wordCount == 0
+                ? "Paragraph \(index + 1) is empty — type the narration before generating."
+                : "Paragraph \(index + 1) is too short to synthesize — use at least two words."
+            return
+        }
+
         paragraphs[index].isGenerating = true
         paragraphs[index].audioPath = nil
         isProcessing = true
@@ -1319,7 +2313,14 @@ On Tuesday morning, Maya counted four blue lanterns near the station and said th
         let speed = paragraphs[index].speed.rate
         let pitchSemitones = paragraphs[index].pitch.semitones
         let filename = paragraphs[index].outputFilename.isEmpty ? "para_\(id.uuidString).wav" : paragraphs[index].outputFilename
-        let outputPath = documentsURL.appendingPathComponent(filename).path
+        // Paragraph audio lives in the attached video's working folder when
+        // there is one; audio-only projects keep writing next to Documents.
+        // Video clips use the full paragraph UUID as the filename: unique by
+        // construction, so no two takes can ever overwrite each other.
+        let outputDirectory = videoWorkspaceURL ?? documentsURL
+        let uniqueName = "clip_\(id.uuidString).wav"
+        let outputName = (videoWorkspaceURL != nil) ? uniqueName : filename
+        let outputPath = outputDirectory.appendingPathComponent(outputName).path
 
         if voiceID == ReferenceVoiceProfile.voiceID, referenceVoice == nil {
             statusMessage = "Enroll a Reference Voice before using that speaker preset."
@@ -1366,6 +2367,8 @@ On Tuesday morning, Maya counted four blue lanterns near the station and said th
         
         if success {
             paragraphs[index].audioPath = outputPath
+            await measureAudioDuration(for: id)
+            autoGapVoiceClips()
             statusMessage = "Audio generated for Paragraph \(index + 1)."
         } else {
             statusMessage = "Failed to generate audio for Paragraph \(index + 1)."
@@ -1413,6 +2416,7 @@ On Tuesday morning, Maya counted four blue lanterns near the station and said th
                 remapParagraphVoicesIfNeeded()
                 normalizeJingleTimelineItems()
                 statusMessage = "Transcript loaded (\(loaded.count) paragraphs)."
+                Task { await refreshParagraphAudioDurations() }
             } catch {
                 statusMessage = "Load failed: \(error.localizedDescription)"
             }

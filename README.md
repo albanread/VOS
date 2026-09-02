@@ -20,6 +20,9 @@ Like many A.I. features this is very non-deterministic,  meaning that voices dri
 - Speed and pitch are independent: tempo changes use real time-stretching (AVAudioUnitTimePitch), so faster delivery no longer raises pitch.
 - Local inference only: llama.cpp GGUF for Improve/Rephrase and `mlx-audio-swift` + `mlx-swift` for Qwen3-TTS speech generation.
 - Audio workflow: per-paragraph WAV generation, inline preview, and stitched export to M4A or WAV.
+- Video timeline: drag a screen capture or other video onto the window (or attach it from the sidebar), scrub the player or filmstrip, and write narration in the playhead-following editor — each paragraph is linked to the frames where it starts and ends.
+- Video export: preview the mixed video inside the app (original audio muted or attenuated), then export a `.mov` with the voice-over placed at the anchored times.
+- Voice track export: render a full-length WAV of just the narration — voices at their anchor times, silence in between — to attach in a separate video editor, with the video acting only as the timing reference.
 - Audio shaping: per-paragraph pitch control, tempo-style speed control, and post-generation speech loudness normalization for more consistent output levels.
 - Reference Voice workflow: record a short sample, optionally run speech cleanup with **Clean and Save**, then use that enrolled voice for cloning-style generation.
 - Guided setup: compute-tier presets choose recommended GGUF and Qwen model repos, with managed downloads under `~/Library/vos2026`.
@@ -127,12 +130,29 @@ launches a verified-fresh scriptable instance and
 3. Add paragraphs, choose Qwen voice presets, and adjust speed, pitch, or gaps.
 4. Optionally run **Improve** or **Rephrase** with the local LLM.
 5. Optionally enroll a **Reference Voice** from a short recording; use **Clean and Save** if the room or microphone input is noisy.
-6. Generate paragraph audio, preview it, then export the final sequence.
+6. To narrate a video, attach it under **Video** in the sidebar, scrub the player or filmstrip, and use **Set at Playhead** on each paragraph; export from the timeline sheet.
+7. Generate paragraph audio, preview it, then export the final sequence.
 
 ## Models
 - Default LLM downloads live under `~/Library/vos2026/llm`.
 - The default TTS repo is `mlx-community/Qwen3-TTS-12Hz-0.6B-Base-8bit`, with larger Qwen recommendations selected on bigger machines.
 - Advanced settings can override the LLM URL and the Qwen model repo string.
+
+## Developer notes (review rules)
+- **Never read or write a `@Published` property inside its own `didSet`.**
+  Writing the observed property from its observer re-fires the observer and
+  recurses until the stack guard page faults (SIGSEGV, crash report
+  2026-09-02). `ProjectViewModel.renameCurrentProject(to:)` is the pattern to
+  follow: a plain `@Published` storage property plus an explicit action
+  method that validates (non-empty, changed) before assigning.
+- **Narration ids belong to the clip that created them.** The store refuses
+  to re-home an id into another clip (foreign ids get fresh UUIDs) and
+  refuses to overwrite a populated clip with an empty save. Both guards
+  exist because their absence silently drained a real project into a test
+  clip; do not remove them.
+- `./Scripts/scripting-smoke.sh` runs inside a throwaway project via
+  `new project`/`switch project`. Keep it that way: it must never mutate a
+  real project.
 
 ## Releasing
 

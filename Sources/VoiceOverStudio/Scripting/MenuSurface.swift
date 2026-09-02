@@ -100,6 +100,20 @@ enum MenuSurface {
             model.stopPlayback()
         },
 
+        // Video timeline
+        MenuAction("open video timeline", summary: "Show the video timeline sheet.") { model in
+            model.openVideoTimeline()
+        },
+        MenuAction("play video preview", summary: "Play the attached video with the anchored voice-over preview.") { model in
+            model.videoController.playPause()
+        },
+        MenuAction("stop video playback", summary: "Pause the video timeline preview player.") { model in
+            model.videoController.pause()
+        },
+        MenuAction("refresh video preview", summary: "Rebuild video preview playback from current anchors and paragraph audio.") { model in
+            await model.refreshVideoPreview()
+        },
+
         // Panels and sheets
         MenuAction("open jingle library", summary: "Show the jingle card library sheet.") { model in
             model.openJingleLibrary()

@@ -8,7 +8,7 @@ Build and launch a scriptable instance:
 
 ```bash
 ./Scripts/relaunch-scripting.sh   # rebuilds, kills stale instances, verifies freshness
-./Scripts/scripting-smoke.sh      # runs the 24-check surface test
+./Scripts/scripting-smoke.sh      # runs the whole surface test, video export included
 ```
 
 `VOS_BACKGROUND_LAUNCH=1` (or `--background`) launches without stealing focus.
@@ -27,27 +27,55 @@ tell application "VoiceOverStudio"
 end tell
 ```
 
+## Video voice-over tour
+
+The full narrate-a-video workflow is scriptable end to end — no panels, no
+human in the loop:
+
+```applescript
+tell application "VoiceOverStudio"
+    attach video to "~/Movies/screen-capture.mov"   -- blocks until readable; returns the resolved path
+    set video original audio volume to 0            -- mute the source (0.0…1.0)
+    set video playhead to 12                        -- scrub the preview player
+    anchor narration 1 time 3.5                     -- returns the clamped time
+    get start time of every narration               -- audit the anchors
+    export video to "/tmp/narrated.mov"             -- blocks until the .mov is written
+    export voice track to "/tmp/voicetrack.wav"     -- WAV only, full video length
+    detach video                                    -- anchors stay in the project
+end tell
+```
+
+`anchor narration N time T` requires an attached video and clamps T to the
+video duration; `unanchor narration N` removes the anchor. `set audio path of
+narration N to "<wav>"` makes an existing WAV current without re-running TTS,
+which lets headless pipelines reuse earlier renders.
+
 ## Surface
 
 **Application properties** — `status`, `busy`, `speech ready`, `language model
 ready`, `compute tier` (small/medium/high), `speech model repository`,
 `language model path`, `default gap`, `export format` (M4A/WAV), `reference
-voice enrolled`, `setup progress`, `setup narrative`, `build stamp`.
+voice enrolled`, `setup progress`, `setup narrative`, `build stamp`, `video
+path`, `video attached`, `video duration`, `video playhead`, `video original
+audio volume`.
 
-**Elements** — `narration N` (text, voice, speed, pitch, gap, output name,
-audio path, generated, generating, position, id), `voice N` (id, name,
-prompt), `jingle N` (name, role, abc source, target duration, speech safety).
+**Elements** — `narration N` (text, voice, speed, pitch, gap, start time,
+voice duration, anchored, output name, audio path, generated, generating,
+position, id), `voice N` (id, name, prompt), `jingle N` (name, role, abc
+source, target duration, speech safety).
 
 **Application verbs** — `initialize engines`, `auto setup`, `create narration
 script … speaker …`, `create cue preset …`, `generate all`, `stop playback`,
 `export sequence to …`, `save transcript to …`, `load transcript from …`,
-`capture screenshot [to …]`, `discard slot N`, `menu items`, `perform action
-…`, `wait until idle [timeout N]`.
+`attach video to …`, `detach video`, `export video to …`,
+`export voice track to …`, `capture screenshot [to …]`, `discard slot N`,
+`menu items`, `perform action …`, `wait until idle [timeout N]`.
 
 **Element verbs** (object-first dispatch) — `synthesize narration N`, `polish
 narration N`, `rephrase narration N`, `preview narration N`, `replicate
-narration N`, `relocate narration N destination M`, `verify jingle N`,
-`render midi jingle N to …`, `preview jingle N`.
+narration N`, `relocate narration N destination M`, `anchor narration N time
+T`, `unanchor narration N`, `verify jingle N`, `render midi jingle N to …`,
+`preview jingle N`.
 
 **Menu surface** — `menu items` lists every named UI action; `perform action
 "…"` invokes one. Actions marked in `MenuSurface.swift` as presenting dialogs

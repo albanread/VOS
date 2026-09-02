@@ -112,13 +112,44 @@ final class ScriptParagraph: NSObject {
         set { mutate { $0.gapDuration = max(0, newValue) } }
     }
 
+    /// Seconds into the attached video where this paragraph's voice clip
+    /// begins; 0 when unanchored (check `anchored` to tell 0:00 from no anchor).
+    @objc var scriptStartTime: Double {
+        get { read(0.0) { $0.startTime ?? 0.0 } }
+        set { mutate { $0.startTime = max(0, newValue) } }
+    }
+
+    /// Length of this paragraph's voice clip: the measured WAV duration once
+    /// generated, otherwise an estimate from the text.
+    @objc var scriptVoiceDuration: Double {
+        withScriptingModel(fallback: 0.0) { model in
+            model.audioDuration(forParagraphID: self.paragraphID)
+        }
+    }
+
+    @objc var scriptAnchored: Bool {
+        read(false) { $0.startTime != nil }
+    }
+
     @objc var scriptOutputFilename: String {
         get { read("") { $0.outputFilename } }
         set { mutate { $0.outputFilename = newValue } }
     }
 
     @objc var scriptAudioPath: String {
-        read("") { $0.audioPath ?? "" }
+        get { read("") { $0.audioPath ?? "" } }
+        set {
+            withScriptingModel(fallback: ()) { model in
+                guard let index = model.paragraphs.firstIndex(where: { $0.id == self.paragraphID }) else { return }
+                let trimmed = newValue.trimmingCharacters(in: .whitespacesAndNewlines)
+                let expanded = (trimmed as NSString).expandingTildeInPath
+                if !expanded.isEmpty && !FileManager.default.fileExists(atPath: expanded) {
+                    model.statusMessage = "No audio file at '\(expanded)'; audio path unchanged."
+                    return
+                }
+                model.paragraphs[index].audioPath = expanded.isEmpty ? nil : expanded
+            }
+        }
     }
 
     @objc var scriptGenerated: Bool {
@@ -228,6 +259,30 @@ final class ScriptParagraph: NSObject {
                 command.scriptErrorString = error.localizedDescription
             }
         }
+        return nil
+    }
+
+    @objc(handleAnchorCommand:)
+    func handleAnchor(_ command: NSScriptCommand) -> Any? {
+        guard let time = (command.arguments?["Time"] as? NSNumber)?.doubleValue else {
+            command.scriptErrorNumber = -1708
+            command.scriptErrorString = "anchor requires a 'time' parameter in seconds, for example: anchor narration 2 time 12.5."
+            return nil
+        }
+        let id = paragraphID
+        return withScriptingModel(fallback: 0.0 as Any) { model -> Any in
+            guard let clamped = model.setParagraphStart(id, at: time) else {
+                command.scriptErrorNumber = -1708
+                command.scriptErrorString = model.statusMessage
+                return 0.0
+            }
+            return clamped
+        }
+    }
+
+    @objc(handleUnanchorCommand:)
+    func handleUnanchor(_ command: NSScriptCommand) -> Any? {
+        withScriptingModel(fallback: ()) { $0.clearParagraphStart(self.paragraphID) }
         return nil
     }
 

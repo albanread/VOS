@@ -19,6 +19,8 @@ extension ProjectViewModel {
         case paragraphNotFound
         case jingleNotFound
         case noWindow
+        case videoNotAttached
+        case noAnchoredVideoClips
 
         var errorDescription: String? {
             switch self {
@@ -34,6 +36,10 @@ extension ProjectViewModel {
                 return "No jingle with that identifier exists."
             case .noWindow:
                 return "The application has no window to capture."
+            case .videoNotAttached:
+                return "No video is attached. Use 'attach video to' with a movie file path first."
+            case .noAnchoredVideoClips:
+                return "No narrations are anchored with generated audio for video export. Use 'anchor' after synthesizing."
             }
         }
     }
@@ -60,6 +66,7 @@ extension ProjectViewModel {
         remapParagraphVoicesIfNeeded()
         normalizeJingleTimelineItems()
         statusMessage = "Transcript loaded (\(loaded.count) paragraphs)."
+        Task { await refreshParagraphAudioDurations() }
         return loaded.count
     }
 
@@ -187,5 +194,49 @@ extension ProjectViewModel {
         paragraphs.insert(moved, at: clamped)
         normalizeJingleTimelineItems()
         statusMessage = "Moved paragraph to position \(clamped + 1)."
+    }
+
+    // MARK: - Video timeline
+
+    /// Attach and load a video without an open panel. Throws when the path is
+    /// missing or the file has no readable video track.
+    @discardableResult
+    func scriptAttachVideo(path: String) async throws -> String {
+        let expanded = (path as NSString).expandingTildeInPath
+        guard !expanded.isEmpty else {
+            throw NSError(
+                domain: "ProjectViewModel",
+                code: -40,
+                userInfo: [NSLocalizedDescriptionKey: "attach video requires a file path."]
+            )
+        }
+        guard FileManager.default.fileExists(atPath: expanded) else {
+            throw NSError(
+                domain: "ProjectViewModel",
+                code: -41,
+                userInfo: [NSLocalizedDescriptionKey: "No video file at '\(expanded)'."]
+            )
+        }
+
+        let url = URL(fileURLWithPath: expanded)
+        guard await attachVideoFile(at: url) else {
+            throw NSError(
+                domain: "ProjectViewModel",
+                code: -42,
+                userInfo: [
+                    NSLocalizedDescriptionKey: videoController.loadError
+                        ?? "The video could not be loaded."
+                ]
+            )
+        }
+        return url.path
+    }
+
+    /// Detach the current video; returns the path that was attached, if any.
+    @discardableResult
+    func scriptDetachVideo() -> String? {
+        let previous = videoPath
+        detachVideo()
+        return previous
     }
 }

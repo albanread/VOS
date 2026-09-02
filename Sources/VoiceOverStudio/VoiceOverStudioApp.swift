@@ -154,6 +154,56 @@ struct VoiceOverStudioApp: App {
                 .environmentObject(uiState)
         }
         .commands {
+            CommandMenu("Project") {
+                Button("New Project…") {
+                    viewModel.isNewProjectSheetPresented = true
+                }
+                .keyboardShortcut("n", modifiers: [.command, .shift])
+
+                Button("Open Project…") {
+                    viewModel.isOpenProjectSheetPresented = true
+                }
+                .keyboardShortcut("o", modifiers: [.command, .shift])
+
+                Divider()
+
+                Menu("Open Recent") {
+                    if viewModel.recentProjects.isEmpty {
+                        Text("No Projects Yet")
+                    }
+                    ForEach(viewModel.recentProjects, id: \.id) { listing in
+                        Button {
+                            viewModel.openProject(listing.id)
+                        } label: {
+                            HStack {
+                                if listing.id == viewModel.activeProjectID {
+                                    Image(systemName: "checkmark")
+                                }
+                                Text(listing.name)
+                            }
+                        }
+                    }
+                }
+
+                Menu("Clip") {
+                    if viewModel.clipSummaries.isEmpty {
+                        Text("No Clips in This Project")
+                    }
+                    ForEach(viewModel.clipSummaries, id: \.id) { clip in
+                        Button {
+                            viewModel.switchToClip(clip.id)
+                        } label: {
+                            HStack {
+                                if clip.id == viewModel.activeClip?.id {
+                                    Image(systemName: "checkmark")
+                                }
+                                Text(clip.displayName)
+                            }
+                        }
+                    }
+                }
+            }
+
             CommandGroup(after: .newItem) {
                 Button("Save Transcript…") {
                     viewModel.saveTranscript()

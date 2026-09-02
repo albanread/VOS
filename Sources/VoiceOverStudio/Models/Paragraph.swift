@@ -10,6 +10,8 @@ struct Paragraph: Identifiable, Codable {
     var text: String
     var voiceID: String = "narrator_clear"
     var gapDuration: Double = 0.5 // Seconds of silence after this paragraph
+    var startTime: Double? // Seconds into the attached video where this paragraph's voice clip begins; nil = unanchored
+    var isRecorded = false // True once included in a video/voice-track export: locked against moves and changes until explicitly unlocked
     var speed: SpeedPreset = .normal
 
     enum SpeedPreset: String, Codable, CaseIterable {
@@ -62,7 +64,7 @@ struct Paragraph: Identifiable, Codable {
     var outputFilename: String = ""
 
     enum CodingKeys: String, CodingKey {
-        case id, text, voiceID, voiceSid, gapDuration, speed, pitch, audioPath, outputFilename
+        case id, text, voiceID, voiceSid, gapDuration, startTime, isRecorded, speed, pitch, audioPath, outputFilename
     }
 
     init(
@@ -70,6 +72,8 @@ struct Paragraph: Identifiable, Codable {
         text: String,
         voiceID: String = "narrator_clear",
         gapDuration: Double = 0.5,
+        startTime: Double? = nil,
+        isRecorded: Bool = false,
         speed: SpeedPreset = .normal,
         pitch: PitchPreset = .normal,
         audioPath: String? = nil,
@@ -80,6 +84,8 @@ struct Paragraph: Identifiable, Codable {
         self.text = text
         self.voiceID = voiceID
         self.gapDuration = gapDuration
+        self.startTime = startTime
+        self.isRecorded = isRecorded
         self.speed = speed
         self.pitch = pitch
         self.audioPath = audioPath
@@ -98,6 +104,8 @@ struct Paragraph: Identifiable, Codable {
             voiceID = Self.migrateLegacyVoiceID(from: legacyVoiceSID)
         }
         gapDuration = try container.decodeIfPresent(Double.self, forKey: .gapDuration) ?? 0.5
+        startTime = try container.decodeIfPresent(Double.self, forKey: .startTime)
+        isRecorded = try container.decodeIfPresent(Bool.self, forKey: .isRecorded) ?? false
         if let preset = try? container.decodeIfPresent(SpeedPreset.self, forKey: .speed) {
             speed = preset
         } else if let numericSpeed = try? container.decodeIfPresent(Float.self, forKey: .speed) {
@@ -119,10 +127,27 @@ struct Paragraph: Identifiable, Codable {
         try container.encode(text, forKey: .text)
         try container.encode(voiceID, forKey: .voiceID)
         try container.encode(gapDuration, forKey: .gapDuration)
+        try container.encodeIfPresent(startTime, forKey: .startTime)
+        try container.encode(isRecorded, forKey: .isRecorded)
         try container.encode(speed, forKey: .speed)
         try container.encode(pitch, forKey: .pitch)
         try container.encodeIfPresent(audioPath, forKey: .audioPath)
         try container.encode(outputFilename, forKey: .outputFilename)
+    }
+
+    var startTimeLabel: String? {
+        startTime.map { Self.timecode($0) }
+    }
+
+    static func timecode(_ seconds: Double) -> String {
+        let total = max(0, Int(seconds.rounded(.down)))
+        let hours = total / 3600
+        let minutes = (total % 3600) / 60
+        let secs = total % 60
+        if hours > 0 {
+            return String(format: "%d:%02d:%02d", hours, minutes, secs)
+        }
+        return String(format: "%02d:%02d", minutes, secs)
     }
 
     private static func migrateLegacyVoiceID(from sid: Int32) -> String {

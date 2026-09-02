@@ -69,6 +69,7 @@ extension NSApplication {
         withScriptingModel(fallback: false) { model in
             model.isProcessing
                 || model.isUpdatingModels
+                || model.isVideoExporting
                 || model.paragraphs.contains(where: \.isGenerating)
         }
     }
@@ -96,6 +97,44 @@ extension NSApplication {
     /// Stamped at process start; lets a test harness confirm which binary answers.
     @objc var scriptBuildStamp: String {
         ScriptingRegistry.processStamp
+    }
+
+    // MARK: Video timeline state
+
+    @objc var scriptVideoPath: String {
+        withScriptingModel(fallback: "") { $0.videoPath ?? "" }
+    }
+
+    @objc var scriptVideoAttached: Bool {
+        withScriptingModel(fallback: false) { $0.videoController.isLoaded }
+    }
+
+    @objc var scriptVideoDuration: Double {
+        withScriptingModel(fallback: 0.0) { $0.videoController.duration }
+    }
+
+    /// Current preview playhead. Setting it seeks the preview player when a
+    /// video is attached; the write is otherwise ignored.
+    @objc var scriptVideoPlayhead: Double {
+        get { withScriptingModel(fallback: 0.0) { $0.videoController.playbackTime } }
+        set {
+            withScriptingModel(fallback: ()) { model in
+                guard model.videoController.isLoaded else { return }
+                model.videoController.seek(to: newValue)
+            }
+        }
+    }
+
+    /// Original video audio level from 0.0 (muted) to 1.0. Writing it persists
+    /// the value and rebuilds preview playback.
+    @objc var scriptVideoVolume: Double {
+        get { withScriptingModel(fallback: 0.0) { $0.videoOriginalAudioVolume } }
+        set {
+            withScriptingModel(fallback: ()) { model in
+                model.videoOriginalAudioVolume = min(max(newValue, 0), 1)
+                model.commitVideoVolume()
+            }
+        }
     }
 
     @objc var scriptTTSModelRepo: String {

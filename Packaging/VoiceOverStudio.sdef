@@ -116,6 +116,21 @@
             <property name="build stamp" code="pBst" type="text" access="r" description="Launch timestamp and process id, for checking that a fresh binary is running.">
                 <cocoa key="scriptBuildStamp"/>
             </property>
+            <property name="video path" code="vPth" type="text" access="r" description="Path of the attached video, or empty when none is attached. Use 'attach video to' to set it.">
+                <cocoa key="scriptVideoPath"/>
+            </property>
+            <property name="video attached" code="vAtt" type="boolean" access="r" description="True when a readable video is loaded in the timeline.">
+                <cocoa key="scriptVideoAttached"/>
+            </property>
+            <property name="video duration" code="vDur" type="real" access="r" description="Duration of the attached video in seconds; 0 when none is loaded.">
+                <cocoa key="scriptVideoDuration"/>
+            </property>
+            <property name="video playhead" code="vPlh" type="real" description="Current preview playhead in seconds. Setting it seeks the preview player.">
+                <cocoa key="scriptVideoPlayhead"/>
+            </property>
+            <property name="video original audio volume" code="vVol" type="real" description="Level of the video's original audio in the mix, 0.0 muted to 1.0 full.">
+                <cocoa key="scriptVideoVolume"/>
+            </property>
         </class>
 
         <class name="narration" code="Para" description="One block of narration in the project." plural="narrations">
@@ -141,10 +156,19 @@
             <property name="gap" code="pGap" type="real" description="Seconds of silence after this paragraph.">
                 <cocoa key="scriptGap"/>
             </property>
+            <property name="start time" code="vSTm" type="real" description="Seconds into the attached video where this paragraph's voice clip begins. 0 when unanchored; check 'anchored' to tell 0:00 from no anchor.">
+                <cocoa key="scriptStartTime"/>
+            </property>
+            <property name="voice duration" code="vVDr" type="real" access="r" description="Length of this paragraph's voice clip in seconds: the measured audio duration once generated, otherwise an estimate from the text.">
+                <cocoa key="scriptVoiceDuration"/>
+            </property>
+            <property name="anchored" code="vAnc" type="boolean" access="r" description="True when this paragraph has a start time in the attached video.">
+                <cocoa key="scriptAnchored"/>
+            </property>
             <property name="output name" code="pOFn" type="text" description="Filename used for this paragraph's generated audio.">
                 <cocoa key="scriptOutputFilename"/>
             </property>
-            <property name="audio path" code="pAPa" type="text" access="r" description="Path to the generated audio, or empty if not yet generated.">
+            <property name="audio path" code="pAPa" type="text" description="Path to the generated audio, or empty if not yet generated. Setting it to an existing WAV makes that audio current (useful for reusing earlier renders).">
                 <cocoa key="scriptAudioPath"/>
             </property>
             <property name="generated" code="pGen" type="boolean" access="r" description="True when audio exists for this paragraph.">
@@ -171,6 +195,12 @@
             </responds-to>
             <responds-to command="relocate">
                 <cocoa method="handleRelocateCommand:"/>
+            </responds-to>
+            <responds-to command="anchor">
+                <cocoa method="handleAnchorCommand:"/>
+            </responds-to>
+            <responds-to command="unanchor">
+                <cocoa method="handleUnanchorCommand:"/>
             </responds-to>
         </class>
 
@@ -311,12 +341,62 @@
             <result type="integer" description="The number of narrations remaining."/>
         </command>
 
+        <command name="new project" code="VOSSnwpr" description="Create a fresh project and make it current; the previous project stays in the database.">
+            <cocoa class="VOSNewProjectCommand"/>
+            <parameter name="named" code="kPNm" type="text" optional="yes" description="Name for the new project.">
+                <cocoa key="Named"/>
+            </parameter>
+            <result type="text" description="The status message after creating."/>
+        </command>
+
+        <command name="switch project" code="VOSSswpr" description="Open another project by (partial) name or by its position in the recency list.">
+            <cocoa class="VOSSwitchProjectCommand"/>
+            <parameter name="named" code="kPNm" type="text" optional="yes" description="Project name, exact or uniquely matching.">
+                <cocoa key="Named"/>
+            </parameter>
+            <parameter name="number" code="kNum" type="integer" optional="yes" description="1-based position in the Open Recent order.">
+                <cocoa key="Number"/>
+            </parameter>
+            <result type="text" description="The status message after switching."/>
+        </command>
+
         <command name="wait until idle" code="VOSSwait" description="Block until the app is not busy, or until the timeout elapses.">
             <cocoa class="VOSWaitUntilIdleCommand"/>
             <parameter name="timeout" code="kTmo" type="real" optional="yes" description="Maximum seconds to wait. Defaults to 300.">
                 <cocoa key="Timeout"/>
             </parameter>
             <result type="boolean" description="True if the app became idle, false if the timeout elapsed."/>
+        </command>
+
+        <!-- Video timeline: application-targeted verbs. -->
+
+        <command name="attach video" code="VOSSatvd" description="Attach a video file to the project and load it into the timeline. Waits until the video is readable.">
+            <cocoa class="VOSAttachVideoCommand"/>
+            <parameter name="to" code="kPth" type="text" description="Path to a movie file (mov, mp4, m4v).">
+                <cocoa key="ToPath"/>
+            </parameter>
+            <result type="text" description="The resolved path of the attached video."/>
+        </command>
+
+        <command name="detach video" code="VOSSdtvd" description="Detach the current video. Paragraph anchors are kept in the project.">
+            <cocoa class="VOSDetachVideoCommand"/>
+            <result type="text" description="The status message after detaching."/>
+        </command>
+
+        <command name="export video" code="VOSSexvd" description="Export the attached video with anchored narrations mixed in. Waits until the file is written.">
+            <cocoa class="VOSExportVideoCommand"/>
+            <parameter name="to" code="kPth" type="text" description="Destination .mov path.">
+                <cocoa key="ToPath"/>
+            </parameter>
+            <result type="text" description="The path that was written."/>
+        </command>
+
+        <command name="export voice track" code="VOSSexvt" description="Render a WAV of just the voice track, spanning the video's full duration: voices at their anchor times, silence elsewhere. For attaching in a separate video editor.">
+            <cocoa class="VOSExportVoiceTrackCommand"/>
+            <parameter name="to" code="kPth" type="text" description="Destination WAV path.">
+                <cocoa key="ToPath"/>
+            </parameter>
+            <result type="text" description="The path that was written."/>
         </command>
 
         <!-- Element-targeted commands: the direct parameter is a paragraph or
@@ -352,6 +432,18 @@
             <parameter name="destination" code="kPos" type="integer" description="Destination position, starting at 1.">
                 <cocoa key="Destination"/>
             </parameter>
+        </command>
+
+        <command name="anchor" code="VOSSanch" description="Anchor a paragraph's audio to a time in the attached video. Returns the clamped time that was set.">
+            <direct-parameter type="specifier" description="The paragraph to anchor."/>
+            <parameter name="time" code="kTim" type="real" description="Seconds into the video.">
+                <cocoa key="Time"/>
+            </parameter>
+            <result type="real" description="The anchor time after clamping to the video duration."/>
+        </command>
+
+        <command name="unanchor" code="VOSSunan" description="Remove a paragraph's video anchor.">
+            <direct-parameter type="specifier" description="The paragraph to unanchor."/>
         </command>
 
         <command name="verify" code="VOSSvjng" description="Parse a jingle's ABC source and report problems.">

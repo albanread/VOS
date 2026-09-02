@@ -193,6 +193,64 @@ final class VOSExportSequenceCommand: NSScriptCommand {
     }
 }
 
+// MARK: - Video timeline
+
+@objc(VOSAttachVideoCommand)
+final class VOSAttachVideoCommand: NSScriptCommand {
+    override func performDefaultImplementation() -> Any? {
+        guard let model = vosModel() else { return vosFail(vosNoAppMessage) }
+        guard let path: String = vosArgument("ToPath"), !path.isEmpty else {
+            return vosFail("attach video requires a 'to' parameter with a video file path.")
+        }
+
+        return vosRunAsync {
+            try await model.scriptAttachVideo(path: path)
+        }
+    }
+}
+
+@objc(VOSDetachVideoCommand)
+final class VOSDetachVideoCommand: NSScriptCommand {
+    override func performDefaultImplementation() -> Any? {
+        guard let model = vosModel() else { return vosFail(vosNoAppMessage) }
+        return MainActor.assumeIsolated {
+            _ = model.scriptDetachVideo()
+            return model.statusMessage
+        }
+    }
+}
+
+@objc(VOSExportVideoCommand)
+final class VOSExportVideoCommand: NSScriptCommand {
+    override func performDefaultImplementation() -> Any? {
+        guard let model = vosModel() else { return vosFail(vosNoAppMessage) }
+        guard let path: String = vosArgument("ToPath"), !path.isEmpty else {
+            return vosFail("export video requires a 'to' parameter with a destination path.")
+        }
+
+        let url = URL(fileURLWithPath: (path as NSString).expandingTildeInPath)
+        return vosRunAsync {
+            _ = try await model.scriptExportVideo(to: url)
+            return url.path
+        }
+    }
+}
+
+@objc(VOSExportVoiceTrackCommand)
+final class VOSExportVoiceTrackCommand: NSScriptCommand {
+    override func performDefaultImplementation() -> Any? {
+        guard let model = vosModel() else { return vosFail(vosNoAppMessage) }
+        guard let path: String = vosArgument("ToPath"), !path.isEmpty else {
+            return vosFail("export voice track requires a 'to' parameter with a destination WAV path.")
+        }
+
+        let url = URL(fileURLWithPath: (path as NSString).expandingTildeInPath)
+        return vosRunAsync {
+            try await model.scriptExportVoiceTrack(to: url)
+        }
+    }
+}
+
 @objc(VOSSaveTranscriptCommand)
 final class VOSSaveTranscriptCommand: NSScriptCommand {
     override func performDefaultImplementation() -> Any? {
@@ -245,6 +303,65 @@ final class VOSCaptureScreenshotCommand: NSScriptCommand {
             } catch {
                 return vosFail(error.localizedDescription)
             }
+        }
+    }
+}
+
+// MARK: - Projects
+
+@objc(VOSSwitchProjectCommand)
+final class VOSSwitchProjectCommand: NSScriptCommand {
+    override func performDefaultImplementation() -> Any? {
+        guard let model = vosModel() else { return vosFail(vosNoAppMessage) }
+        let name: String? = vosArgument("Named")
+        let number: Int? = (arguments?["Number"] as? NSNumber)?.intValue
+
+        let listings = MainActor.assumeIsolated {
+            model.recentProjectListings()
+        }
+        guard !listings.isEmpty else {
+            return vosFail("There are no projects yet. Create one first.")
+        }
+
+        var target: ProjectListing?
+        if let name {
+            let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+            let exact = listings.filter { $0.name == trimmed }
+            if exact.count == 1 {
+                target = exact.first
+            } else {
+                let prefixed = listings.filter { $0.name.localizedCaseInsensitiveContains(trimmed) }
+                if prefixed.count == 1 {
+                    target = prefixed.first
+                } else if prefixed.count > 1 {
+                    let names = prefixed.map(\.name).joined(separator: ", ")
+                    return vosFail("Ambiguous project '\(trimmed)' — matches: \(names).")
+                }
+            }
+        } else if let number, number >= 1, number <= listings.count {
+            target = listings[number - 1]
+        }
+
+        guard let target else {
+            let names = listings.enumerated().map { "\($0.offset + 1). \($0.element.name)" }.joined(separator: "; ")
+            return vosFail("No matching project. Known projects: \(names).")
+        }
+
+        return MainActor.assumeIsolated {
+            model.openProject(target.id)
+            return model.statusMessage
+        }
+    }
+}
+
+@objc(VOSNewProjectCommand)
+final class VOSNewProjectCommand: NSScriptCommand {
+    override func performDefaultImplementation() -> Any? {
+        guard let model = vosModel() else { return vosFail(vosNoAppMessage) }
+        let name: String? = vosArgument("Named")
+        return MainActor.assumeIsolated {
+            model.startNewProject(named: name ?? "Untitled Project")
+            return model.statusMessage
         }
     }
 }

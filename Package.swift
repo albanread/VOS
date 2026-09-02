@@ -42,6 +42,9 @@ let package = Package(
             path: "Sources/VoiceOverStudio",
             resources: [
                 .copy("Resources/default.metallib")
+            ],
+            linkerSettings: [
+                .linkedLibrary("sqlite3")
             ]
         ),
         .target(

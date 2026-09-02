@@ -166,12 +166,29 @@ struct ContentView: View {
         }
         .navigationSplitViewStyle(.balanced)
         .frame(minWidth: 900, minHeight: 620)
+        .dropDestination(for: URL.self) { urls, _ in
+            guard let url = urls.first, VideoTimelineService.isMovieURL(url) else { return false }
+            Task { await viewModel.attachVideoDropped(url) }
+            return true
+        }
         .sheet(isPresented: $viewModel.isReferenceVoiceSheetPresented) {
             ReferenceVoiceEnrollmentSheet()
                 .environmentObject(viewModel)
         }
         .sheet(isPresented: $viewModel.isJingleLibrarySheetPresented) {
             JingleLibrarySheet()
+                .environmentObject(viewModel)
+        }
+        .sheet(isPresented: $viewModel.isVideoTimelineSheetPresented) {
+            VideoTimelineSheet()
+                .environmentObject(viewModel)
+        }
+        .sheet(isPresented: $viewModel.isNewProjectSheetPresented) {
+            NewProjectSheet()
+                .environmentObject(viewModel)
+        }
+        .sheet(isPresented: $viewModel.isOpenProjectSheetPresented) {
+            OpenProjectSheet()
                 .environmentObject(viewModel)
         }
         .onChange(of: viewModel.voiceConfigurations) {
@@ -267,6 +284,62 @@ struct ContentView: View {
                 }
             }
 
+            Section("Project") {
+                TextField("Project name", text: Binding(
+                    get: { viewModel.projectName },
+                    set: { viewModel.renameCurrentProject(to: $0) }
+                ))
+                .textFieldStyle(.roundedBorder)
+
+                Button {
+                    viewModel.isNewProjectSheetPresented = true
+                } label: {
+                    Label("New Project…", systemImage: "folder.badge.plus")
+                        .frame(maxWidth: .infinity)
+                }
+                .help("Start a fresh project; this one stays in the database")
+
+                if viewModel.clipSummaries.count > 1 {
+                    Picker("Clip", selection: Binding(
+                        get: { viewModel.activeClip?.id ?? -1 },
+                        set: { viewModel.switchToClip($0) }
+                    )) {
+                        ForEach(viewModel.clipSummaries, id: \.id) { clip in
+                            Text(clip.displayName).tag(clip.id)
+                        }
+                    }
+                    .help("Switch between this project's clips (video attachments and the voice-only transcript)")
+                }
+            }
+
+            Section("Video") {
+                Text(viewModel.videoPath == nil
+                    ? "Attach a screen recording, view its frames, and place voice-over at the right moments."
+                    : "Video attached — open the timeline to anchor paragraphs and export a mixed video.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                if viewModel.videoPath != nil, let clip = viewModel.activeClip {
+                    Text(clip.displayName)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+
+                Button(viewModel.videoPath == nil ? "Add Video Clip…" : "Open Video Timeline…") {
+                    viewModel.openVideoTimeline()
+                }
+                .help("Attach another video to this project, or open the timeline for the active clip")
+
+                if viewModel.videoPath != nil {
+                    Button("Switch to Voice-Only") {
+                        viewModel.detachVideo()
+                    }
+                    .help("Return to the project's voice-only transcript; the video clip stays in the project")
+                }
+            }
+
             Section("Jingles") {
                 Button("Open Jingle Library…") {
                     viewModel.openJingleLibrary()
@@ -337,6 +410,100 @@ struct ContentView: View {
             }
         }
         .formStyle(.grouped)
+    }
+}
+
+struct NewProjectSheet: View {
+    @EnvironmentObject private var viewModel: ProjectViewModel
+    @State private var name = ""
+
+    var body: some View {
+        VStack(spacing: 14) {
+            Text("New Project")
+                .font(.headline)
+            TextField("Project name", text: $name)
+                .textFieldStyle(.roundedBorder)
+                .onSubmit(create)
+            Text("The current project stays in the database.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            HStack {
+                Spacer()
+                Button("Cancel") {
+                    viewModel.isNewProjectSheetPresented = false
+                }
+                .keyboardShortcut(.cancelAction)
+                Button("Create", action: create)
+                    .buttonStyle(.borderedProminent)
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+        }
+        .padding(20)
+        .frame(width: 360)
+    }
+
+    private func create() {
+        viewModel.startNewProject(named: name)
+        viewModel.isNewProjectSheetPresented = false
+    }
+}
+
+struct OpenProjectSheet: View {
+    @EnvironmentObject private var viewModel: ProjectViewModel
+    @State private var selected: Int64?
+    @State private var listings: [ProjectListing] = []
+
+    var body: some View {
+        VStack(spacing: 0) {
+            List(selection: $selected) {
+                ForEach(listings, id: \.id) { listing in
+                    HStack {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(listing.name)
+                                .font(.body.weight(listing.id == viewModel.activeProjectID ? .semibold : .regular))
+                            Text("\(listing.clipCount) clip\(listing.clipCount == 1 ? "" : "s") · \(listing.voiceOverCount) voice-over\(listing.voiceOverCount == 1 ? "" : "s") · updated \(listing.updatedAt.formatted(.relative(presentation: .named)))")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                    }
+                    .padding(.vertical, 3)
+                    .tag(listing.id)
+                    .onTapGesture(count: 2) { open() }
+                }
+            }
+            .listStyle(.inset)
+            .frame(minWidth: 460, minHeight: 300)
+
+            HStack {
+                if listings.isEmpty {
+                    Text("No projects yet — create one to start.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button("Cancel") {
+                    viewModel.isOpenProjectSheetPresented = false
+                }
+                .keyboardShortcut(.cancelAction)
+                Button("Open", action: open)
+                    .buttonStyle(.borderedProminent)
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(selected == nil)
+            }
+            .padding(12)
+        }
+        .frame(minWidth: 480, minHeight: 380)
+        .onAppear {
+            listings = viewModel.recentProjectListings()
+        }
+    }
+
+    private func open() {
+        guard let selected else { return }
+        viewModel.openProject(selected)
+        viewModel.isOpenProjectSheetPresented = false
     }
 }
 
@@ -419,6 +586,7 @@ struct JingleLibrarySheet: View {
                 Button("Done") {
                     viewModel.isJingleLibrarySheetPresented = false
                 }
+                .keyboardShortcut(.cancelAction)
             }
         }
     }
@@ -857,6 +1025,27 @@ struct ParagraphRow: View {
                 .padding(.vertical, 3)
                 .background(.quaternary.opacity(0.6), in: RoundedRectangle(cornerRadius: 5))
 
+            if timelineStart != nil {
+                Label(timelineBadge, systemImage: "clock")
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
+                    .padding(.vertical, 3)
+                    .padding(.horizontal, 6)
+                    .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 5))
+                    .help(videoPlacementHelp)
+            }
+
+            Button {
+                viewModel.openTimeline(at: timelineStart)
+            } label: {
+                Image(systemName: viewModel.hasVideoClip ? "film.stack" : "waveform.path")
+            }
+            .buttonStyle(.borderless)
+            .foregroundStyle(.secondary)
+            .help(viewModel.hasVideoClip
+                ? "Open the video timeline for this clip"
+                : "Open the voice timeline (sequential, podcast style)")
+
             Picker(selection: $paragraph.voiceID) {
                 ForEach(voiceOptions) { option in
                     Text(option.name).tag(option.id)
@@ -923,6 +1112,35 @@ struct ParagraphRow: View {
         paragraph.audioPath != nil && !paragraph.isGenerating
     }
 
+    /// Every voice is over a timeline: anchored times on a video clip,
+    /// stacked sequentially on a voice-only clip.
+    private var timelineStart: Double? {
+        viewModel.timelineStart(forParagraphID: paragraph.id)
+    }
+
+    private var timelineBadge: String {
+        guard let start = timelineStart,
+              let end = viewModel.timelineEnd(forParagraphID: paragraph.id)
+        else { return "—:—" }
+        return "\(Paragraph.timecode(start)) → \(Paragraph.timecode(end))"
+    }
+
+    private var videoPlacementHelp: String {
+        guard let start = timelineStart,
+              let end = viewModel.timelineEnd(forParagraphID: paragraph.id)
+        else { return "" }
+        let duration = viewModel.audioDuration(forParagraphID: paragraph.id)
+        let qualifier = viewModel.hasMeasuredAudioDuration(paragraph.id) ? "measured" : "estimated"
+        return viewModel.hasVideoClip
+            ? "Voiced \(Paragraph.timecode(start)) → \(Paragraph.timecode(end)) (\(String(format: "%.1f", duration))s, \(qualifier)) in this video clip"
+            : "Runs \(Paragraph.timecode(start)) → \(Paragraph.timecode(end)) (\(String(format: "%.1f", duration))s, \(qualifier)) in the sequential voice timeline"
+    }
+
+    private var videoRangeBadge: LocalizedStringKey? {
+        guard timelineStart != nil else { return nil }
+        return "\(timelineBadge)"
+    }
+
     private var footer: some View {
         HStack(spacing: 8) {
             if paragraph.isGenerating {
@@ -967,6 +1185,15 @@ struct ParagraphRow: View {
             }
             if abs(paragraph.gapDuration - 0.5) > 0.001 {
                 settingBadge("Gap \(paragraph.gapDuration, specifier: "%.2g")s")
+            }
+            if let videoBadge = videoRangeBadge {
+                settingBadge(videoBadge)
+                if !viewModel.hasMeasuredAudioDuration(paragraph.id) {
+                    settingBadge("≈ length")
+                }
+            }
+            if paragraph.isRecorded {
+                settingBadge("Recorded")
             }
 
             Button {
