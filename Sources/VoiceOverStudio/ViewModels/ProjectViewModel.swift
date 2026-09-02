@@ -693,9 +693,11 @@ On Tuesday morning, Maya counted four blue lanterns near the station and said th
         loadVoiceConfigurationStore()
         loadJingleCardStore()
         loadJingleTimelineStore()
-        loadPersistedProject()
         loadReferenceVoiceProfile()
+        projectStore?.migrateNarrationVoicesToReferenceVoice(enrolled: referenceVoiceProfile != nil)
+        loadPersistedProject()
         refreshVoiceOptions()
+        remapParagraphVoicesIfNeeded()
         startVideoProjectAutosave()
         if paragraphs.isEmpty {
             addStarterParagraphIfEmpty()
@@ -1436,7 +1438,7 @@ On Tuesday morning, Maya counted four blue lanterns near the station and said th
                     && paragraph.audioPath == nil
                     && !paragraph.isGenerating
             }
-            var paragraph = Paragraph(text: "", voiceID: defaultVoiceConfigurationID())
+            var paragraph = Paragraph(text: "", voiceID: defaultVoiceIDForNewClips())
             paragraph.outputFilename = "clip_\(paragraph.id.uuidString).wav"
             paragraph.gapDuration = defaultGap
             paragraphs.append(paragraph)
@@ -1477,7 +1479,7 @@ On Tuesday morning, Maya counted four blue lanterns near the station and said th
             return existing.id
         }
 
-        var paragraph = Paragraph(text: "", voiceID: defaultVoiceConfigurationID())
+        var paragraph = Paragraph(text: "", voiceID: defaultVoiceIDForNewClips())
         if paragraph.outputFilename.isEmpty {
             paragraph.outputFilename = "para_\(paragraph.id.uuidString.prefix(8)).wav"
         }
@@ -1883,18 +1885,24 @@ On Tuesday morning, Maya counted four blue lanterns near the station and said th
 
     static let starterParagraphText = "New paragraph text here."
 
+    /// Reference Voice is the point of the app: when one is enrolled it is
+    /// the default for every new clip; preset voices remain a fallback.
+    func defaultVoiceIDForNewClips() -> String {
+        referenceVoiceProfile != nil ? ReferenceVoiceProfile.voiceID : defaultVoiceConfigurationID()
+    }
+
     /// The launch starter ignores timeline capacity — an empty editor is
     /// never the right answer to a full video.
     private func addStarterParagraphIfEmpty() {
         guard paragraphs.isEmpty else { return }
-        var paragraph = Paragraph(text: Self.starterParagraphText, voiceID: defaultVoiceConfigurationID())
+        var paragraph = Paragraph(text: Self.starterParagraphText, voiceID: defaultVoiceIDForNewClips())
         paragraph.outputFilename = "clip_\(paragraph.id.uuidString).wav"
         paragraph.gapDuration = defaultGap
         paragraphs.append(paragraph)
     }
 
     func addParagraph() {
-        var p = Paragraph(text: Self.starterParagraphText, voiceID: defaultVoiceConfigurationID())
+        var p = Paragraph(text: Self.starterParagraphText, voiceID: defaultVoiceIDForNewClips())
         if p.outputFilename.isEmpty {
             p.outputFilename = "para_\(p.id.uuidString.prefix(8)).wav"
         }
@@ -2744,6 +2752,10 @@ On Tuesday morning, Maya counted four blue lanterns near the station and said th
     }
 
     func remapParagraphVoicesIfNeeded() {
+        // Before the engine reports its presets the list is empty; remapping
+        // against nothing would reset every stored voice to the default
+        // preset. Wait until real options exist.
+        guard !voiceOptions.isEmpty else { return }
         let validVoiceIDs = Set(voiceOptions.map(\ .id))
         let defaultVoiceID = defaultVoiceConfigurationID()
         paragraphs = paragraphs.map { paragraph in

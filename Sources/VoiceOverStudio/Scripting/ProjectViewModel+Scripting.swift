@@ -179,6 +179,8 @@ extension ProjectViewModel {
         }
         if let voiceID, voiceOptions.contains(where: { $0.id == voiceID }) {
             paragraphs[index].voiceID = voiceID
+        } else if voiceID == nil {
+            paragraphs[index].voiceID = defaultVoiceIDForNewClips()
         }
         return paragraphs[index].id
     }

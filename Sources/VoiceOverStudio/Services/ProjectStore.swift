@@ -319,6 +319,18 @@ final class ProjectStore {
         })
     }
 
+    /// One-time: when a Reference Voice is enrolled, every existing narration
+    /// and all future defaults speak with it — it is the point of the app.
+    func migrateNarrationVoicesToReferenceVoice(enrolled: Bool) {
+        guard metaGet("referenceVoiceDefault") == nil else { return }
+        if enrolled {
+            execute("UPDATE narrations SET voice_id = 'reference_voice', updated_at = ?1;", bindings: { stmt in
+                sqlite3_bind_double(stmt, 1, Date().timeIntervalSince1970)
+            })
+        }
+        metaSet("referenceVoiceDefault", enrolled ? "migrated" : "skipped-no-profile")
+    }
+
     func findClipID(projectID: Int64, videoPath: String) -> Int64? {
         queryInt64("SELECT id FROM clips WHERE project_id = ?1 AND video_path = ?2", bind: { stmt in
             sqlite3_bind_int64(stmt, 1, projectID)
