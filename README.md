@@ -135,7 +135,7 @@ launches a verified-fresh scriptable instance and
 
 ## Models
 - Default LLM downloads live under `~/Library/vos2026/llm`.
-- The default TTS repo is `mlx-community/Qwen3-TTS-12Hz-0.6B-Base-8bit`, with larger Qwen recommendations selected on bigger machines.
+- The default TTS repo is `mlx-community/Qwen3-TTS-12Hz-0.6B-Base-8bit`; bigger machines are recommended `Qwen3-TTS-12Hz-1.7B-Base-8bit` (or bf16), which carries the speaker encoder so preset voices and Reference Voice cloning run on one model.
 - Advanced settings can override the LLM URL and the Qwen model repo string.
 
 ## Developer notes (review rules)
@@ -178,5 +178,5 @@ Re-zip after stapling and attach the zip to a GitHub release.
 - If `xcrun metal` or `xcrun metallib` is missing, open Xcode once and make sure the full Xcode app is selected with `xcode-select -p`.
 - If the app fails to link, rebuild llama.cpp so `ThirdParty/llama.cpp/build` contains the static archives expected by `Package.swift`.
 - If TTS initialization fails, verify the configured Hugging Face repo exists and that the machine has enough unified memory for the selected Qwen model tier.
-- Reference voice quality is driven heavily by the recorded sample; `Clean and Save` helps with room noise, while the built-in loudness normalization helps keep generated paragraph volume more consistent across runs.
+- Reference Voice runs on the Qwen3-TTS 1.7B **Base** checkpoint (the cloning model with the speaker encoder); quality is driven heavily by the recorded sample — `Clean and Save` helps with room noise, and the built-in loudness normalization keeps generated paragraph volume consistent across runs.
 - The current `mlx-audio-swift` dependency emits README resource warnings during `swift build`; they are upstream package warnings and do not block the app build.

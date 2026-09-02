@@ -16,7 +16,10 @@ private struct UncheckedSendableModel: @unchecked Sendable {
 @MainActor
 class TTSService: ObservableObject {
     static let defaultModelRepo = "mlx-community/Qwen3-TTS-12Hz-0.6B-Base-8bit"
-    static let preferredReferenceVoiceModelRepo = "mlx-community/Qwen3-TTS-12Hz-1.7B-VoiceDesign-8bit"
+    // Base checkpoints carry the speaker encoder that embeds reference audio
+    // (the port builds it only for ttsModelType == "base"); the 1.7B Base is
+    // Qwen's best released cloning checkpoint per their Seed-TTS benchmarks.
+    static let preferredReferenceVoiceModelRepo = "mlx-community/Qwen3-TTS-12Hz-1.7B-Base-8bit"
     nonisolated private static let consistentVoiceTemperature: Float = 0.25
     nonisolated private static let consistentVoiceTopP: Float = 0.75
     nonisolated private static let referenceVoiceMinimumPeak: Float = 0.12
@@ -42,8 +45,9 @@ class TTSService: ObservableObject {
         speakerOptions.removeAll()
     }
 
-    static func prefersVoiceDesignForReferenceVoice(modelRepo: String) -> Bool {
-        modelRepo.localizedCaseInsensitiveContains("voicedesign")
+    static func prefersReferenceVoiceModel(modelRepo: String) -> Bool {
+        modelRepo.trimmingCharacters(in: .whitespacesAndNewlines)
+            .caseInsensitiveCompare(preferredReferenceVoiceModelRepo) == .orderedSame
     }
 
     func isModelCached(modelRepo: String, revision: String = "main") -> Bool {

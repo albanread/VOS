@@ -94,9 +94,9 @@ On Tuesday morning, Maya counted four blue lanterns near the station and said th
         var id: String { rawValue }
         var title: String {
             switch self {
-            case .small: return "Small (M1 / 8-16GB)"
-            case .medium: return "Medium (M1 Pro/Max, M2/M3 Pro)"
-            case .high: return "High (M2 Ultra / M3 Ultra)"
+            case .small: return "Small (8-16GB, M1-M3 base)"
+            case .medium: return "Medium (M4 or newer, 16GB+; any Pro/Max)"
+            case .high: return "High (Ultra, 48GB+)"
             }
         }
     }
@@ -128,29 +128,43 @@ On Tuesday morning, Maya counted four blue lanterns near the station and said th
             return ModelRecommendation(
                 llmName: "Llama-3.2-3B-Instruct Q4_K_M (~2.0GB)",
                 llmURL: "https://huggingface.co/bartowski/Llama-3.2-3B-Instruct-GGUF/resolve/main/Llama-3.2-3B-Instruct-Q4_K_M.gguf?download=true",
-                ttsName: "Qwen3-TTS 1.7B VoiceDesign 8bit",
-                ttsModelRepo: "mlx-community/Qwen3-TTS-12Hz-1.7B-VoiceDesign-8bit",
-                rationale: "Balances better LLM guidance with a stronger Qwen TTS model for richer prompt-driven voices."
+                ttsName: "Qwen3-TTS 1.7B Base 8bit",
+                ttsModelRepo: "mlx-community/Qwen3-TTS-12Hz-1.7B-Base-8bit",
+                rationale: "One model for both preset voices and Reference Voice cloning — the 1.7B Base carries the speaker encoder, so no model switching mid-project."
             )
         case .high:
             return ModelRecommendation(
                 llmName: "Meta-Llama-3.1-8B-Instruct Q4_K_M (~4.9GB)",
                 llmURL: "https://huggingface.co/bartowski/Meta-Llama-3.1-8B-Instruct-GGUF/resolve/main/Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf?download=true",
-                ttsName: "Qwen3-TTS 1.7B VoiceDesign bf16",
-                ttsModelRepo: "mlx-community/Qwen3-TTS-12Hz-1.7B-VoiceDesign-bf16",
-                rationale: "Targets higher-memory Macs where the larger VoiceDesign model can run locally without trading off quality."
+                ttsName: "Qwen3-TTS 1.7B Base bf16",
+                ttsModelRepo: "mlx-community/Qwen3-TTS-12Hz-1.7B-Base-bf16",
+                rationale: "Full-precision 1.7B Base for the best cloning fidelity on high-memory Macs, with no quantization drift."
             )
         }
+    }
+
+    /// Chip generation parsed from the brand string ("Apple M4 Max" -> 4).
+    /// Newer base chips have the bandwidth to run the 1.7B TTS model even at
+    /// 16GB, where M1-M3 base machines stay on the 0.6B.
+    private func chipGeneration() -> Int {
+        let name = chipName()
+        guard let pattern = try? NSRegularExpression(pattern: "M(\\d+)"),
+              let match = pattern.firstMatch(in: name, range: NSRange(name.startIndex..., in: name)),
+              let group = Range(match.range(at: 1), in: name),
+              let generation = Int(name[group])
+        else { return 1 }
+        return generation
     }
 
     func autoDetectModelTier() {
         let memoryGB = Double(ProcessInfo.processInfo.physicalMemory) / 1_073_741_824.0
         let chip = chipName().lowercased()
+        let generation = chipGeneration()
 
         let detected: ComputeTier
-        if chip.contains("ultra") || memoryGB >= 64 {
+        if chip.contains("ultra") || memoryGB >= 48 {
             detected = .high
-        } else if chip.contains("pro") || chip.contains("max") || memoryGB >= 24 {
+        } else if chip.contains("pro") || chip.contains("max") || memoryGB >= 24 || (generation >= 4 && memoryGB >= 16) {
             detected = .medium
         } else {
             detected = .small
@@ -1840,7 +1854,7 @@ On Tuesday morning, Maya counted four blue lanterns near the station and said th
             referenceVoiceScript = Self.defaultReferenceVoiceScript
         }
         if referenceVoiceProfile == nil {
-            referenceVoiceEnrollmentStatus = "Record in a quiet room. Best results use the VoiceDesign Qwen model with about 8 to 12 seconds of clean speech."
+            referenceVoiceEnrollmentStatus = "Record in a quiet room. Best results use the Qwen3-TTS 1.7B Base cloning model with about 8 to 12 seconds of clean speech."
         }
         Task {
             await prepareReferenceVoiceModelIfNeeded()
@@ -1881,36 +1895,36 @@ On Tuesday morning, Maya counted four blue lanterns near the station and said th
             ttsModelRepo = preferredRepo
 
             if shouldDownload {
-                modelUpdateNarrative = "Preparing VoiceDesign model for Reference Voice..."
-                referenceVoiceEnrollmentStatus = "Downloading the VoiceDesign model needed for Reference Voice..."
+                modelUpdateNarrative = "Preparing the cloning model (Qwen3-TTS 1.7B Base) for Reference Voice..."
+                referenceVoiceEnrollmentStatus = "Downloading the cloning model needed for Reference Voice..."
                 _ = try await ttsService.downloadModel(modelRepo: preferredRepo) { progress in
                     self.modelUpdateProgress = max(0.0, min(progress.fractionCompleted, 1.0))
                     let percent = Int((progress.fractionCompleted * 100.0).rounded())
-                    self.modelUpdateNarrative = "Downloading VoiceDesign model... \(percent)%"
-                    self.referenceVoiceEnrollmentStatus = "Downloading VoiceDesign model for Reference Voice... \(percent)%"
+                    self.modelUpdateNarrative = "Downloading the cloning model... \(percent)%"
+                    self.referenceVoiceEnrollmentStatus = "Downloading the cloning model for Reference Voice... \(percent)%"
                 }
             } else {
                 modelUpdateProgress = 0.85
-                modelUpdateNarrative = "VoiceDesign model already cached. Loading it for Reference Voice..."
-                referenceVoiceEnrollmentStatus = "Loading VoiceDesign model for Reference Voice..."
+                modelUpdateNarrative = "Cloning model already cached. Loading it for Reference Voice..."
+                referenceVoiceEnrollmentStatus = "Loading the cloning model for Reference Voice..."
             }
 
             modelUpdateProgress = max(modelUpdateProgress, 0.92)
-            modelUpdateNarrative = "Loading VoiceDesign model..."
+            modelUpdateNarrative = "Loading the cloning model..."
             try await ttsService.initializeTTS(modelRepo: preferredRepo)
             isTTSReady = true
             voiceOptions = computedVoiceOptions()
             remapParagraphVoicesIfNeeded()
 
             modelUpdateProgress = 1.0
-            modelUpdateNarrative = "VoiceDesign model ready."
-            referenceVoiceEnrollmentStatus = "VoiceDesign model ready. You can record and save a Reference Voice now."
+            modelUpdateNarrative = "Cloning model ready."
+            referenceVoiceEnrollmentStatus = "Cloning model ready. You can record and save a Reference Voice now."
             statusMessage = "Reference Voice model ready."
             try? await Task.sleep(nanoseconds: 1_200_000_000)
             modelUpdateNarrative = "Idle"
         } catch {
-            modelUpdateNarrative = "VoiceDesign model setup failed."
-            referenceVoiceEnrollmentStatus = "Failed to prepare the VoiceDesign model: \(error.localizedDescription)"
+            modelUpdateNarrative = "Cloning model setup failed."
+            referenceVoiceEnrollmentStatus = "Failed to prepare the cloning model: \(error.localizedDescription)"
             statusMessage = "Reference Voice model setup failed: \(error.localizedDescription)"
         }
     }
@@ -2042,9 +2056,9 @@ On Tuesday morning, Maya counted four blue lanterns near the station and said th
             referenceVoiceProfile = profile
             refreshVoiceOptions()
             let durationText = String(format: "%.1f", summary.durationSeconds)
-            let guidance = TTSService.prefersVoiceDesignForReferenceVoice(modelRepo: ttsModelRepo)
+            let guidance = TTSService.prefersReferenceVoiceModel(modelRepo: ttsModelRepo)
                 ? ""
-                : " Switch Qwen to a VoiceDesign repo for better cloning quality."
+                : " Switch Qwen to \(TTSService.preferredReferenceVoiceModelRepo) for real cloning quality."
             let silenceNote = summary.trimmedSilence ? " Leading/trailing silence removed." : ""
             let cleanupNote = cleanedWithEnhancement ? " Background noise reduced." : ""
             referenceVoiceEnrollmentStatus = "Reference Voice saved (\(durationText)s cleaned sample).\(silenceNote)\(cleanupNote)\(guidance)"
@@ -2330,11 +2344,11 @@ On Tuesday morning, Maya counted four blue lanterns near the station and said th
         }
 
         if voiceID == ReferenceVoiceProfile.voiceID,
-           !TTSService.prefersVoiceDesignForReferenceVoice(modelRepo: trimmedRepo)
+           !TTSService.prefersReferenceVoiceModel(modelRepo: trimmedRepo)
         {
             let preferredRepo = TTSService.preferredReferenceVoiceModelRepo
             if ttsService.isModelCached(modelRepo: preferredRepo) {
-                statusMessage = "Switching to VoiceDesign model for Reference Voice..."
+                statusMessage = "Switching to the cloning model (Qwen3-TTS 1.7B Base) for Reference Voice..."
                 do {
                     ttsModelRepo = preferredRepo
                     try await ttsService.initializeTTS(modelRepo: preferredRepo)
@@ -2342,13 +2356,13 @@ On Tuesday morning, Maya counted four blue lanterns near the station and said th
                     voiceOptions = computedVoiceOptions()
                     remapParagraphVoicesIfNeeded()
                 } catch {
-                    statusMessage = "Reference Voice needs the VoiceDesign model: \(error.localizedDescription)"
+                    statusMessage = "Reference Voice needs the cloning model: \(error.localizedDescription)"
                     paragraphs[index].isGenerating = false
                     isProcessing = false
                     return
                 }
             } else {
-                statusMessage = "Reference Voice works best with a VoiceDesign Qwen repo. Download \(preferredRepo) in Settings first."
+                statusMessage = "Reference Voice needs the cloning model \(preferredRepo). Download it in Settings first."
                 paragraphs[index].isGenerating = false
                 isProcessing = false
                 return

@@ -847,8 +847,8 @@ struct ReferenceVoiceEnrollmentSheet: View {
                     Image(systemName: viewModel.isPreferredReferenceVoiceModelCached ? "checkmark.circle.fill" : "arrow.down.circle")
                         .foregroundStyle(viewModel.isPreferredReferenceVoiceModelCached ? .green : .secondary)
                     Text(viewModel.isPreferredReferenceVoiceModelCached
-                        ? "VoiceDesign model is cached locally."
-                        : "Voice cloning needs the VoiceDesign model.")
+                        ? "Cloning model (Qwen3-TTS 1.7B Base) is cached locally."
+                        : "Voice cloning needs the Qwen3-TTS 1.7B Base model.")
                         .font(.callout)
                     Spacer()
                     Button(viewModel.isPreferredReferenceVoiceModelCached ? "Load Model" : "Download Model") {
