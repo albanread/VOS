@@ -1626,9 +1626,18 @@ On Tuesday morning, Maya counted four blue lanterns near the station and said th
         let suffix = notes.isEmpty ? "" : " — " + notes.joined(separator: "; ") + "."
         statusMessage = "Video exported: \(destinationURL.lastPathComponent)" + suffix
             + (newlyRecorded > 0 ? " \(newlyRecorded) clip(s) recorded and locked." : "")
-        NSWorkspace.shared.activateFileViewerSelecting([destinationURL])
+        revealExportedInNewFinderWindow(destinationURL)
         persistVideoProject()
         return suffix
+    }
+
+    /// Open a fresh Finder window on the export's folder with the file
+    /// selected — the answer to "where did it go".
+    private func revealExportedInNewFinderWindow(_ url: URL) {
+        let finder = URL(fileURLWithPath: "/System/Library/CoreServices/Finder.app")
+        let configuration = NSWorkspace.OpenConfiguration()
+        configuration.activates = true
+        NSWorkspace.shared.open([url], withApplicationAt: finder, configuration: configuration)
     }
 
     /// Clips included in an export are committed: mark them recorded (locked)
@@ -1711,7 +1720,7 @@ On Tuesday morning, Maya counted four blue lanterns near the station and said th
         let newlyRecorded = markExportedClipsRecorded()
         statusMessage = "Voice track exported: \(destinationURL.lastPathComponent)"
             + (newlyRecorded > 0 ? " \(newlyRecorded) clip(s) recorded and locked." : "")
-        NSWorkspace.shared.activateFileViewerSelecting([destinationURL])
+        revealExportedInNewFinderWindow(destinationURL)
         persistVideoProject()
         return destinationURL.path
     }
