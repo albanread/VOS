@@ -343,6 +343,7 @@ On Tuesday morning, Maya counted four blue lanterns near the station and said th
     /// transcript) is written transactionally with its voice blobs, so the
     /// transcript editor and the timeline always share one truth.
     func persistVideoProject() {
+        canonicalizeClipOrder()
         guard let projectID = ensureProject() else { return }
         let clipPath = videoPath ?? ""
         if clipPath.isEmpty {
@@ -390,7 +391,67 @@ On Tuesday morning, Maya counted four blue lanterns near the station and said th
         } else {
             dedupeVideoTimeline()
             purgeEmptyPlaceholders()
+            canonicalizeClipOrder()
         }
+    }
+
+    /// Start time is the authority for order on a video clip: the paragraph
+    /// array — and therefore the transcript view and every stored position —
+    /// always follows it. Clip ids stay stable for audio identity; only
+    /// ordering defers to the timeline. Unanchored strays keep their relative
+    /// order at the end.
+    func canonicalizeClipOrder() {
+        guard hasVideoClip else { return }
+        let before = paragraphs.map(\.id)
+        let anchored = paragraphs.filter { $0.startTime != nil }
+            .sorted { ($0.startTime ?? 0) < ($1.startTime ?? 0) }
+        let unanchored = paragraphs.filter { $0.startTime == nil }
+        paragraphs = anchored + unanchored
+        if paragraphs.map(\.id) != before {
+            debugLog("DEBUG:: [VM] Clip order canonicalized by start time (\(anchored.count) anchored clips)")
+        }
+    }
+
+    /// Integrity checks for the active clip: ordering, text-to-audio
+    /// bindings, missing files, and timeline overlaps. Returns a readable
+    /// report; empty string means everything passed.
+    func verifyTimelineIntegrity() -> String {
+        var problems: [String] = []
+
+        let anchored = paragraphs.filter { $0.startTime != nil }
+            .sorted { ($0.startTime ?? 0) < ($1.startTime ?? 0) }
+        if anchored.map(\.id) != paragraphs.filter { $0.startTime != nil }.map(\.id) {
+            problems.append("clip order does not follow start times (run a reload to canonicalize)")
+        }
+
+        var looseBindings = 0
+        var missingFiles = 0
+        for paragraph in paragraphs {
+            guard let path = paragraph.audioPath else { continue }
+            let expected = "clip_\(paragraph.id.uuidString)"
+            if !path.contains(expected) && !path.contains("para_") {
+                looseBindings += 1
+                debugLog("DEBUG:: [VM] Binding mismatch: \(path) does not belong to \(paragraph.id)")
+            }
+            if !FileManager.default.fileExists(atPath: path) {
+                missingFiles += 1
+            }
+        }
+        if looseBindings > 0 { problems.append("\(looseBindings) clip(s) reference audio from a different clip") }
+        if missingFiles > 0 { problems.append("\(missingFiles) clip(s) reference missing audio files") }
+
+        var overlaps = 0
+        var floor: Double?
+        for paragraph in anchored {
+            let end = (paragraph.startTime ?? 0) + max(audioDuration(forParagraphID: paragraph.id), 0.5)
+            if let floorValue = floor, (paragraph.startTime ?? 0) < floorValue - 0.01 {
+                overlaps += 1
+            }
+            floor = max(floor ?? 0, end + 0.5)
+        }
+        if overlaps > 0 { problems.append("\(overlaps) clip(s) overlap an earlier voice") }
+
+        return problems.isEmpty ? "" : problems.joined(separator: "; ")
     }
 
     /// Launch restore: the current project and its active clip.
@@ -1472,10 +1533,14 @@ On Tuesday morning, Maya counted four blue lanterns near the station and said th
         }
 
         // New clips always go to the right: past the red bar AND past the end
-        // of the last clip on the track, then into free space.
+        // of the last clip on the track, then into free space. The explicit
+        // max over every anchored start is a belt-and-braces invariant —
+        // creation must never place a clip before an existing one.
         let lastClipEnd = videoVoiceSpans.last?.end ?? 0
-        let earliest = max(videoController.playbackTime, lastClipEnd + 0.5)
+        let latestStart = paragraphs.compactMap(\.startTime).max() ?? 0
+        let earliest = max(videoController.playbackTime, lastClipEnd + 0.5, latestStart + 0.5)
         let target = nextFreeVoiceSlot(after: (earliest * 10).rounded() / 10)
+        assert(target >= latestStart, "clip creation would reorder the timeline")
 
         // An empty, ungenerated clip already parked at the target IS the new
         // clip — reuse it rather than overlapping a duplicate.

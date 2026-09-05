@@ -107,6 +107,12 @@ enum MenuSurface {
         MenuAction("close video timeline", summary: "Dismiss the video timeline sheet.") { model in
             model.isVideoTimelineSheetPresented = false
         },
+        MenuAction("verify timeline", summary: "Check clip ordering, text-to-audio bindings, files, and overlaps.") { model in
+            let report = model.verifyTimelineIntegrity()
+            model.statusMessage = report.isEmpty
+                ? "Timeline integrity: all checks passed."
+                : "Timeline integrity issues: \(report)"
+        },
         MenuAction("play video preview", summary: "Play the attached video with the anchored voice-over preview.") { model in
             model.videoController.playPause()
         },
