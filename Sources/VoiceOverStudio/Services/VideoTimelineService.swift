@@ -431,6 +431,10 @@ final class VideoTimelineController: ObservableObject {
     private let thumbnails = VideoThumbnailProvider()
     private var timeObserverToken: Any?
     private var seekTask: Task<Void, Never>?
+    /// True while the preview player item is being swapped: the new item
+    /// reports time zero before the resume seek lands, and publishing that
+    /// blip would snap the red bar and the scroll view back to the start.
+    private var isReplacingPreviewItem = false
 
     private(set) var voiceOnly = false
 
@@ -443,7 +447,8 @@ final class VideoTimelineController: ObservableObject {
         timeObserverToken = player.addPeriodicTimeObserver(forInterval: interval, queue: .main) { [weak self] time in
             let seconds = time.seconds
             Task { @MainActor in
-                self?.playbackTime = max(0, seconds)
+                guard let self, !self.isReplacingPreviewItem else { return }
+                self.playbackTime = max(0, seconds)
             }
         }
         player.publisher(for: \.timeControlStatus)
@@ -534,14 +539,19 @@ final class VideoTimelineController: ObservableObject {
             )
             let item = AVPlayerItem(asset: composition)
             item.audioMix = audioMix
-            let resumeTime = player.currentTime()
+            // playbackTime is the authoritative position (a pending seek may
+            // not have landed on the player clock yet); player.currentTime()
+            // here would resurrect a stale position and look like a jump back.
+            let resumeTime = CMTime(seconds: max(0, min(playbackTime, duration)), preferredTimescale: 600)
             let wasPlaying = player.timeControlStatus == .playing
+            isReplacingPreviewItem = true
             player.replaceCurrentItem(with: item)
             await player.seek(
                 to: resumeTime,
                 toleranceBefore: CMTime(seconds: 0.05, preferredTimescale: 600),
                 toleranceAfter: CMTime(seconds: 0.05, preferredTimescale: 600)
             )
+            isReplacingPreviewItem = false
             if wasPlaying {
                 player.play()
             }
