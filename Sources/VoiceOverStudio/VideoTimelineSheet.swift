@@ -570,7 +570,9 @@ private struct VideoTimelineContent: View {
         else { return }
         let end = start + viewModel.audioDuration(forParagraphID: id)
         pinnedParagraphID = nil
-        controller.seek(to: viewModel.nextFreeVoiceSlot(after: end + postVoiceAdvanceSeconds))
+        engageFollow()
+        let advanced = viewModel.nextFreeVoiceSlot(after: end + postVoiceAdvanceSeconds)
+        controller.seek(to: max(advanced, controller.playbackTime))
     }
 
     /// The "+" flow: commit the clip being edited (generating its voice if
@@ -627,7 +629,13 @@ private struct VideoTimelineContent: View {
 
             await viewModel.refreshVideoPreview()
             let end = start + viewModel.audioDuration(forParagraphID: id)
-            controller.seek(to: viewModel.nextFreeVoiceSlot(after: end + postVoiceAdvanceSeconds))
+            // The playhead only ever moves forward. The commit above may be
+            // an older pinned clip whose end sits behind where the user has
+            // scrubbed to — advancing relative to it would drag the playhead
+            // and the whole view back up the timeline.
+            engageFollow()
+            let advanced = viewModel.nextFreeVoiceSlot(after: end + postVoiceAdvanceSeconds)
+            controller.seek(to: max(advanced, controller.playbackTime))
         } else {
             // Nothing at the playhead: still never overlap what is laid down.
             controller.seek(to: viewModel.nextFreeVoiceSlot(after: controller.playbackTime))
