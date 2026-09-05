@@ -539,10 +539,13 @@ final class VideoTimelineController: ObservableObject {
             )
             let item = AVPlayerItem(asset: composition)
             item.audioMix = audioMix
-            // playbackTime is the authoritative position (a pending seek may
-            // not have landed on the player clock yet); player.currentTime()
-            // here would resurrect a stale position and look like a jump back.
-            let resumeTime = CMTime(seconds: max(0, min(playbackTime, duration)), preferredTimescale: 600)
+            // Remember, rebuild, restore. The saved playhead is forced back
+            // afterwards no matter what the fresh item reported — seeks on a
+            // just-replaced item can silently fail and leave the player at
+            // zero, and any such report is suppressed until the restore has
+            // had time to land.
+            let savedPlayhead = max(0, min(playbackTime, duration))
+            let resumeTime = CMTime(seconds: savedPlayhead, preferredTimescale: 600)
             let wasPlaying = player.timeControlStatus == .playing
             isReplacingPreviewItem = true
             player.replaceCurrentItem(with: item)
@@ -551,9 +554,21 @@ final class VideoTimelineController: ObservableObject {
                 toleranceBefore: CMTime(seconds: 0.05, preferredTimescale: 600),
                 toleranceAfter: CMTime(seconds: 0.05, preferredTimescale: 600)
             )
-            isReplacingPreviewItem = false
+            // Hard restore: our value wins over whatever the player did.
+            playbackTime = savedPlayhead
+            seekTask?.cancel()
+            seekTask = Task { [weak self] in
+                guard let self, !Task.isCancelled else { return }
+                await self.player.seek(to: resumeTime, toleranceBefore: .zero, toleranceAfter: .zero)
+            }
             if wasPlaying {
                 player.play()
+            }
+            // Hold the suppression window so residual zero reports from the
+            // swap cannot publish and drag the view back to the start.
+            Task { [weak self] in
+                try? await Task.sleep(nanoseconds: 500_000_000)
+                self?.isReplacingPreviewItem = false
             }
         } catch {
             loadError = "Preview build failed: \(error.localizedDescription)"
