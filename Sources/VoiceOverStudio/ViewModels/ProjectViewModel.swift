@@ -2832,16 +2832,28 @@ On Tuesday morning, Maya counted four blue lanterns near the station and said th
             return 0
         }
         isProcessing = true
+        var written = 0
+        var failed = 0
         for (i, paragraph) in pending.enumerated() {
             statusMessage = "Generating missing \(i + 1) of \(pending.count)…"
             await generateAudio(for: paragraph.id)
+            if let index = paragraphs.firstIndex(where: { $0.id == paragraph.id }),
+               paragraphs[index].audioPath != nil,
+               paragraphAudioTextDigests[paragraph.id] == ProjectStore.textDigest(paragraphs[index].text) {
+                written += 1
+            } else {
+                failed += 1
+                debugLog("DEBUG:: [VM] generate missing: paragraph \(i + 1) did not produce a current take")
+            }
         }
         if isSlideshowClip {
             await refreshSlideshow(rebake: true)
         }
-        statusMessage = "Generated \(pending.count) missing or stale paragraph\(pending.count == 1 ? "" : "s")."
+        statusMessage = failed == 0
+            ? "Generated \(written) missing or stale paragraph\(written == 1 ? "" : "s")."
+            : "Generated \(written), FAILED \(failed) (see log; locked or too-short paragraphs are refused)."
         isProcessing = false
-        return pending.count
+        return written
     }
 
     func saveFullRecording() {
@@ -2861,6 +2873,7 @@ On Tuesday morning, Maya counted four blue lanterns near the station and said th
 
         if paragraphs[index].isRecorded {
             statusMessage = "Clip \(index + 1) is recorded to the video — unlock it before regenerating."
+            debugLog("DEBUG:: [VM] generateAudio refused: paragraph \(index + 1) is recorded (locked)")
             return
         }
 

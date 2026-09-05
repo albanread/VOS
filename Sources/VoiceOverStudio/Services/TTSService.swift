@@ -43,6 +43,21 @@ class TTSService: ObservableObject {
         model = nil
         loadedModelRepo = nil
         speakerOptions.removeAll()
+        Memory.clearCache()
+    }
+
+    /// Resident footprint of this process, for the generation log.
+    nonisolated private func rssFootprintMB() -> Int {
+        var info = task_vm_info_data_t()
+        var count = mach_msg_type_number_t(
+            MemoryLayout<task_vm_info_data_t>.size / MemoryLayout<natural_t>.size
+        )
+        let result = withUnsafeMutablePointer(to: &info) { pointer in
+            pointer.withMemoryRebound(to: integer_t.self, capacity: Int(count)) { integerPointer in
+                task_info(mach_task_self_, task_flavor_t(TASK_VM_INFO), integerPointer, &count)
+            }
+        }
+        return result == KERN_SUCCESS ? Int(info.phys_footprint / (1024 * 1024)) : -1
     }
 
     static func prefersReferenceVoiceModel(modelRepo: String) -> Bool {
@@ -108,6 +123,10 @@ class TTSService: ObservableObject {
         model = nil
         loadedModelRepo = nil
         speakerOptions = Self.defaultVoiceOptions
+
+        // MLX keeps freed tensors in a reuse cache; unbounded it idles at
+        // ~1 GB after a generation. 256 MB is plenty for one narration.
+        Memory.cacheLimit = 256 * 1024 * 1024
 
         let loadedModel = try await TTS.loadModel(modelRepo: modelRepo, modelType: "qwen3_tts", cache: hubCache)
         model = loadedModel
@@ -204,6 +223,14 @@ class TTSService: ObservableObject {
                     fileURL: URL(fileURLWithPath: outputFile)
                 )
                 debugLog("DEBUG:: [TTS]   normalized speech level")
+
+                // The take is on disk: hand the MLX array cache back now
+                // rather than letting it idle until the library's next
+                // internal sweep. The Metal buffer pool is driver-retained
+                // and plateaus (measured ~11 GB resident worst-case, flat
+                // across takes) — it is reuse, not a leak.
+                Memory.clearCache()
+                debugLog("DEBUG:: [TTS]   memory: active \(Memory.activeMemory / 1_048_576)MB, cache \(Memory.cacheMemory / 1_048_576)MB, rss \(self.rssFootprintMB())MB")
 
                 return true
             } catch {
