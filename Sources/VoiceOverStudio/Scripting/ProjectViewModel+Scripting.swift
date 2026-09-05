@@ -389,6 +389,13 @@ extension ProjectViewModel {
         return statusMessage
     }
 
+    /// Re-split the PDF with the current splitter (whitespace breaks, padded
+    /// crops), keeping narrations, voices and skips. Waits for the re-bake.
+    @discardableResult
+    func scriptReSplitSlideshow() async throws -> String {
+        try await reSplitSlideshow()
+    }
+
     /// Readable summary for scripts: paths, segment range, narration state.
     func slideshowInfoText() -> String {
         guard isSlideshowClip, let clipID = currentClipID, let store = projectStore else {

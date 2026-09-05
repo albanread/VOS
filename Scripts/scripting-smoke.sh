@@ -147,6 +147,7 @@ check "slideshow info"       'slideshow info'
 check "narrate segment"      'narrate segment number 1 script "Smoke summary of the first segment."'
 check "skip segment"         'skip segment number 5'
 check "unskip segment"       'unskip segment number 5'
+check "resplit slideshow"   'resplit slideshow'
 check "dump slideshow"       "dump slideshow to \"$SDUMP\""
 check "bake slideshow"       'bake slideshow'
 if [[ -s "$SDUMP/manifest.json" && -s "$SDUMP/seg-001.png" ]]; then

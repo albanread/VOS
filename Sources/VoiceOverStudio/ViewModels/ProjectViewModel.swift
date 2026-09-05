@@ -1447,6 +1447,50 @@ On Tuesday morning, Maya counted four blue lanterns near the station and said th
         var totalDuration: Double = 0
     }
 
+    /// Rebuild the segment layout from the PDF with the current splitter
+    /// (content-aware breaks at whitespace), keeping narrations, voices and
+    /// skip flags — segment numbers stay stable while the page count holds.
+    /// Re-bakes at the end.
+    @discardableResult
+    func reSplitSlideshow() async throws -> String {
+        guard isSlideshowClip, let clipID = currentClipID, let store = projectStore,
+              let pdfPath = slideshowPDFPath,
+              FileManager.default.fileExists(atPath: pdfPath)
+        else {
+            throw NSError(
+                domain: "ProjectViewModel",
+                code: -55,
+                userInfo: [NSLocalizedDescriptionKey: "The active clip is not a slideshow with a readable PDF."]
+            )
+        }
+        let layout = try PDFSlideshowService.buildLayout(pdfURL: URL(fileURLWithPath: pdfPath))
+        let previous = store.loadSlideshowSegments(clipID: clipID)
+        var skippedByNumber: [Int: Bool] = [:]
+        for record in previous {
+            skippedByNumber[record.number] = record.skipped
+        }
+        let records = layout.segments.map {
+            SlideshowSegmentRecord(
+                number: $0.number,
+                page: $0.page,
+                crop: $0.crop,
+                scrollsIn: $0.scrollsIn,
+                skipped: skippedByNumber[$0.number] ?? false
+            )
+        }
+        store.replaceSlideshowSegments(clipID: clipID, segments: records)
+        if let workspace = videoWorkspaceURL {
+            try? PDFSlideshowService.dumpSegmentAssets(
+                segments: records,
+                pdfURL: URL(fileURLWithPath: pdfPath),
+                into: workspace.appendingPathComponent("slideshow", isDirectory: true)
+            )
+        }
+        await refreshSlideshow(rebake: true)
+        statusMessage = "Slideshow re-split: \(records.count) segments at whitespace breaks, movie re-baked."
+        return statusMessage
+    }
+
     /// Segment spans from voice durations: measured takes when they exist,
     /// text estimates in between, minimum dwell while a stub is still empty.
     /// Mutates paragraph anchors (narration starts after the pan lands) and

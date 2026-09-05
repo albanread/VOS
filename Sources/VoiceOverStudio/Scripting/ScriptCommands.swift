@@ -519,3 +519,14 @@ final class VOSBakeSlideshowCommand: NSScriptCommand {
         }
     }
 }
+
+@objc(VOSReSplitSlideshowCommand)
+final class VOSReSplitSlideshowCommand: NSScriptCommand {
+    override func performDefaultImplementation() -> Any? {
+        guard let model = vosModel() else { return vosFail(vosNoAppMessage) }
+
+        return vosRunAsync {
+            try await model.scriptReSplitSlideshow()
+        }
+    }
+}

@@ -456,6 +456,11 @@
             <result type="text" description="The status report after the bake."/>
         </command>
 
+        <command name="resplit slideshow" code="VOSSrssl" description="Rebuild the segment layout from the PDF with the current splitter (breaks at whitespace, padded crops), keeping narrations, voices and skip flags. Re-bakes the movie. Waits until written.">
+            <cocoa class="VOSReSplitSlideshowCommand"/>
+            <result type="text" description="The status report after the re-split."/>
+        </command>
+
         <!-- Element-targeted commands: the direct parameter is a paragraph or
              jingle specifier; dispatch goes to the handler methods declared in
              responds-to on those classes. -->

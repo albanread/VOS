@@ -81,7 +81,8 @@ enum PDFSlideshowService {
     // MARK: - Layout
 
     /// Split every page into viewports: wide pages stay whole, portrait pages
-    /// become upper and lower halves of their ink box (margins removed).
+    /// become upper and lower halves broken at real whitespace — never
+    /// through a text line.
     static func buildLayout(pdfURL: URL) throws -> Layout {
         guard let document = PDFDocument(url: pdfURL), document.pageCount > 0 else {
             throw SlideshowError.unreadablePDF
@@ -94,13 +95,9 @@ enum PDFSlideshowService {
             let text = (page.string ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
             let crops: [CGRect]
             if content.width / content.height >= 1.25 {
-                crops = [content]
+                crops = [padded(content, within: mediaBox)]
             } else {
-                let half = content.height / 2
-                crops = [
-                    CGRect(x: content.minX, y: content.midY, width: content.width, height: half),
-                    CGRect(x: content.minX, y: content.minY, width: content.width, height: half)
-                ]
+                crops = splitAtLineGaps(page, content: content, mediaBox: mediaBox)
             }
             for (halfIndex, crop) in crops.enumerated() {
                 segments.append(SegmentLayout(
@@ -114,6 +111,76 @@ enum PDFSlideshowService {
         }
         guard !segments.isEmpty else { throw SlideshowError.noPages }
         return Layout(pageCount: document.pageCount, segments: segments)
+    }
+
+    /// Margin around the ink so ascenders, descenders and diagram edges sit
+    /// inside the viewport instead of being sliced by it. Horizontal margin
+    /// is wider so text blocks breathe on screen.
+    private static let cropPaddingY: CGFloat = 10
+    private static let cropPaddingX: CGFloat = 24
+
+    private static func padded(_ rect: CGRect, within mediaBox: CGRect) -> CGRect {
+        rect
+            .insetBy(dx: -cropPaddingX, dy: -cropPaddingY)
+            .intersection(mediaBox)
+    }
+
+    /// Break portrait content at whitespace: collect the page's line rects,
+    /// find the inter-line gap closest to the vertical middle (largest gap
+    /// wins within a band around it), and cut at its centre. The split edge
+    /// gets NO padding — it is mid-gap by construction, and padding there
+    /// would eat into the neighbouring line; only the outer edges and the
+    /// sides are padded. Pages without extractable lines (pure images) fall
+    /// back to a midpoint cut.
+    private static func splitAtLineGaps(_ page: PDFPage, content: CGRect, mediaBox: CGRect) -> [CGRect] {
+        let lines = (page.selection(for: page.bounds(for: .mediaBox))?
+            .selectionsByLine() ?? [])
+            .map { $0.bounds(for: page) }
+            .filter { !$0.isEmpty && $0.midY >= content.minY && $0.midY <= content.maxY }
+            .sorted { $0.midY > $1.midY } // top of the page first
+
+        func halves(splitAt splitY: CGFloat) -> [CGRect] {
+            [
+                CGRect(x: content.minX - cropPaddingX,
+                       y: splitY,
+                       width: content.width + 2 * cropPaddingX,
+                       height: content.maxY + cropPaddingY - splitY)
+                    .intersection(mediaBox),
+                CGRect(x: content.minX - cropPaddingX,
+                       y: content.minY - cropPaddingY,
+                       width: content.width + 2 * cropPaddingX,
+                       height: splitY - (content.minY - cropPaddingY))
+                    .intersection(mediaBox)
+            ]
+        }
+
+        guard lines.count >= 2 else { return halves(splitAt: content.midY) }
+
+        // Gaps between consecutive lines, top to bottom: the bottom edge of
+        // the upper line minus the top edge of the lower one.
+        var candidates: [(position: CGFloat, size: CGFloat)] = []
+        for index in 0..<(lines.count - 1) {
+            let gap = lines[index].minY - lines[index + 1].maxY
+            if gap >= 1 {
+                candidates.append((position: lines[index].minY - gap / 2, size: gap))
+            }
+        }
+        guard !candidates.isEmpty else { return halves(splitAt: content.midY) }
+
+        let middle = content.midY
+        let band = content.height * 0.20
+        let inBand = candidates.filter { abs($0.position - middle) <= band }
+        let chosen: CGFloat
+        if let best = (inBand.isEmpty ? candidates : inBand).max(by: { lhs, rhs in
+            let lhsScore = lhs.size - abs(lhs.position - middle) * 0.05
+            let rhsScore = rhs.size - abs(rhs.position - middle) * 0.05
+            return lhsScore < rhsScore
+        }) {
+            chosen = best.position
+        } else {
+            chosen = middle
+        }
+        return halves(splitAt: chosen)
     }
 
     /// Pixel scan for the page's ink: render the page small and grayscale,
@@ -161,6 +228,8 @@ enum PDFSlideshowService {
 
         // Bitmap memory row 0 is the image's top row; PDF space has y=0 at
         // the bottom of the page. Flip back, then convert to page units.
+        // The box stays tight on the ink — segment crops add the padding, so
+        // insetting here would shave the outermost line edges.
         let topPDF = mediaBox.height - Double(minY) / scale
         let bottomPDF = mediaBox.height - Double(maxY + 1) / scale
         let box = CGRect(
@@ -169,10 +238,9 @@ enum PDFSlideshowService {
             width: Double(maxX - minX + 1) / scale,
             height: topPDF - bottomPDF
         )
-        let inset = min(mediaBox.width, mediaBox.height) * 0.015
-        let trimmed = box.insetBy(dx: inset, dy: inset).intersection(mediaBox)
-        guard !trimmed.isNull, trimmed.width > 8, trimmed.height > 8 else { return mediaBox }
-        return trimmed
+        let clipped = box.intersection(mediaBox)
+        guard !clipped.isNull, clipped.width > 8, clipped.height > 8 else { return mediaBox }
+        return clipped
     }
 
     // MARK: - Viewport rendering
