@@ -57,7 +57,7 @@ On Tuesday morning, Maya counted four blue lanterns near the station and said th
     @Published var isVideoExporting = false
 
     // Services
-    private let projectStore = ProjectStore()
+    let projectStore = ProjectStore()
     private let ttsService = TTSService()
     private let llmService = LLMService()
     private let modelUpdater = ModelUpdaterService()
@@ -309,7 +309,7 @@ On Tuesday morning, Maya counted four blue lanterns near the station and said th
     @Published private(set) var clipSummaries: [ClipSummary] = []
 
     private var currentProjectID: Int64?
-    private var currentClipID: Int64?
+    var currentClipID: Int64?
     /// Playhead target consumed by the timeline sheet when it opens.
     var pendingTimelineSeek: Double?
 
@@ -352,7 +352,9 @@ On Tuesday morning, Maya counted four blue lanterns near the station and said th
                 videoPath: "",
                 workspacePath: nil,
                 originalAudioVolume: videoOriginalAudioVolume,
-                paragraphs: paragraphs
+                paragraphs: paragraphs,
+                isSlideshow: false,
+                sourcePDFPath: nil
             ))
         } else {
             let workspace = videoWorkspaceURL ?? makeWorkspace(for: URL(fileURLWithPath: clipPath))
@@ -362,7 +364,9 @@ On Tuesday morning, Maya counted four blue lanterns near the station and said th
                 videoPath: clipPath,
                 workspacePath: workspace.path,
                 originalAudioVolume: videoOriginalAudioVolume,
-                paragraphs: paragraphs
+                paragraphs: paragraphs,
+                isSlideshow: isSlideshowClip,
+                sourcePDFPath: slideshowPDFPath
             ))
         }
         projectStore?.setActive(projectID: projectID, clipID: currentClipID)
@@ -381,6 +385,8 @@ On Tuesday morning, Maya counted four blue lanterns near the station and said th
         videoOriginalAudioVolume = min(max(record.originalAudioVolume, 0), 1)
         videoWorkspaceURL = record.workspacePath.map { URL(fileURLWithPath: $0) }
         paragraphAudioDurations = record.voiceDurations
+        isSlideshowClip = record.isSlideshow
+        slideshowPDFPath = record.isSlideshow ? record.sourcePDFPath : nil
         remapParagraphVoicesIfNeeded()
         normalizeJingleTimelineItems()
         paragraphs.removeAll {
@@ -388,6 +394,11 @@ On Tuesday morning, Maya counted four blue lanterns near the station and said th
         }
         if record.videoPath.isEmpty {
             // Voice-only clip: sequential timeline, nothing to tidy by anchor.
+        } else if record.isSlideshow {
+            // Segment stubs are legitimately empty until the agent writes
+            // their summaries, and their positions are computed — never
+            // hand-placed — so the placeholder/dedupe tidy-ups must not run.
+            canonicalizeClipOrder()
         } else {
             dedupeVideoTimeline()
             purgeEmptyPlaceholders()
@@ -1326,6 +1337,199 @@ On Tuesday morning, Maya counted four blue lanterns near the station and said th
         Task { await refreshVideoPreview() }
     }
 
+    // MARK: - Slideshow (PDF → narrated slide video)
+
+    /// True when the active clip's "video" is a baked PDF slideshow.
+    @Published private(set) var isSlideshowClip = false
+    @Published private(set) var slideshowPDFPath: String?
+
+    /// Import a PDF as a new slideshow clip: trim page margins, split portrait
+    /// pages into upper/lower viewports, create one empty narration stub per
+    /// segment, and bake the initial stills movie so the clip behaves like a
+    /// video attachment from the first moment. Returns a readable report.
+    @discardableResult
+    func importSlideshow(pdfURL: URL) async throws -> String {
+        let fileName = pdfURL.deletingPathExtension().lastPathComponent
+        let layout = try PDFSlideshowService.buildLayout(pdfURL: pdfURL)
+        let segments = layout.segments.map {
+            SlideshowSegmentRecord(number: $0.number, page: $0.page, crop: $0.crop, scrollsIn: $0.scrollsIn, skipped: false)
+        }
+
+        // File the outgoing working set before switching away from it.
+        persistVideoProject()
+        guard let projectID = ensureProject(), let store = projectStore else {
+            throw NSError(
+                domain: "ProjectViewModel",
+                code: -50,
+                userInfo: [NSLocalizedDescriptionKey: "No project is available to hold the slideshow."]
+            )
+        }
+
+        // Re-importing the same PDF reopens its clip instead of duplicating.
+        if let existing = store.findClipIDByPDF(projectID: projectID, pdfPath: pdfURL.path) {
+            switchToClip(existing)
+            if !(videoPath.map { FileManager.default.fileExists(atPath: $0) } ?? false) {
+                await refreshSlideshow(rebake: true)
+            }
+            statusMessage = "Slideshow reopened: \(fileName) (\(segments.count) segments)."
+            return statusMessage
+        }
+
+        let workspace = makeWorkspace(for: pdfURL)
+        let assetsDirectory = workspace.appendingPathComponent("slideshow", isDirectory: true)
+        try PDFSlideshowService.dumpSegmentAssets(segments: segments, pdfURL: pdfURL, into: assetsDirectory)
+        let movieURL = workspace.appendingPathComponent(
+            "\(Self.sanitizedFolderName(from: fileName)).mov",
+            isDirectory: false
+        )
+
+        // Fresh clip: set the identifying state first — persistVideoProject
+        // reads it when it writes the clip row.
+        currentClipID = nil
+        isSlideshowClip = true
+        slideshowPDFPath = pdfURL.path
+        videoPath = movieURL.path
+        videoWorkspaceURL = workspace
+        videoOriginalAudioVolume = 0
+        paragraphs = layout.segments.map { segment in
+            var paragraph = Paragraph(
+                text: "",
+                voiceID: defaultVoiceIDForNewClips(),
+                gapDuration: defaultGap,
+                segmentNumber: segment.number
+            )
+            paragraph.outputFilename = "clip_\(paragraph.id.uuidString).wav"
+            return paragraph
+        }
+
+        // Initial timing: empty stubs → every segment holds the minimum dwell.
+        let plan = recomputeSlideshowTiming(segments: segments)
+        persistVideoProject()
+        if let clipID = currentClipID {
+            store.replaceSlideshowSegments(clipID: clipID, segments: segments)
+        }
+
+        try await PDFSlideshowService.bake(
+            pdfURL: pdfURL,
+            segments: segments,
+            timing: plan.byNumber,
+            to: movieURL
+        )
+        await prepareVideoPreview()
+        await refreshVideoTimelineDuration()
+        refreshClipSummaries()
+        statusMessage = "Slideshow added: \(fileName) — \(segments.count) segments from \(layout.pageCount) pages."
+        return statusMessage
+    }
+
+    /// Menu entry: pick a PDF and turn it into a slideshow clip.
+    func importSlideshowViaPanel() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = false
+        panel.canChooseFiles = true
+        panel.allowsMultipleSelection = false
+        setAllowedContentTypes(panel, extensions: ["pdf"])
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        Task {
+            isProcessing = true
+            do {
+                _ = try await importSlideshow(pdfURL: url)
+                openVideoTimeline()
+            } catch {
+                statusMessage = "Slideshow import failed: \(error.localizedDescription)"
+            }
+            isProcessing = false
+        }
+    }
+
+    struct SlideshowTimingPlan {
+        var byNumber: [Int: PDFSlideshowService.SegmentTiming] = [:]
+        var totalDuration: Double = 0
+    }
+
+    /// Segment spans from voice durations: measured takes when they exist,
+    /// text estimates in between, minimum dwell while a stub is still empty.
+    /// Mutates paragraph anchors (narration starts after the pan lands) and
+    /// unanchors the stubs of skipped segments.
+    @discardableResult
+    func recomputeSlideshowTiming(segments: [SlideshowSegmentRecord]) -> SlideshowTimingPlan {
+        var plan = SlideshowTimingPlan()
+        var cursor = 0.0
+        let includedNumbers = Set(segments.filter { !$0.skipped }.map(\.number))
+
+        for segment in segments where includedNumbers.contains(segment.number) {
+            let pan = segment.scrollsIn ? PDFSlideshowService.panSeconds : 0
+            let narrationStart = cursor + pan + PDFSlideshowService.leadSeconds
+            let voiceLength: Double
+            if let index = paragraphs.firstIndex(where: { $0.segmentNumber == segment.number }) {
+                voiceLength = audioDuration(forParagraphID: paragraphs[index].id)
+                paragraphs[index].startTime = narrationStart
+            } else {
+                voiceLength = 0
+            }
+            let span = max(
+                pan + PDFSlideshowService.leadSeconds + voiceLength + PDFSlideshowService.tailSeconds,
+                PDFSlideshowService.minimumDwellSeconds
+            )
+            plan.byNumber[segment.number] = PDFSlideshowService.SegmentTiming(
+                start: cursor,
+                span: span,
+                panSeconds: pan,
+                narrationStart: narrationStart
+            )
+            cursor += span
+        }
+
+        for index in paragraphs.indices {
+            if let number = paragraphs[index].segmentNumber, !includedNumbers.contains(number) {
+                paragraphs[index].startTime = nil
+            }
+        }
+        plan.totalDuration = cursor
+        return plan
+    }
+
+    /// Recompute segment spans and (when `rebake`) rewrite the stills movie,
+    /// then rebuild preview. Narration text edits recompute only — spans are
+    /// estimates until the voices exist; generation and skip changes rebake.
+    func refreshSlideshow(rebake: Bool) async {
+        guard isSlideshowClip, let clipID = currentClipID, let store = projectStore else { return }
+        guard let pdfPath = slideshowPDFPath, FileManager.default.fileExists(atPath: pdfPath) else {
+            statusMessage = "The slideshow's PDF is no longer available: \(slideshowPDFPath ?? "?")"
+            return
+        }
+        let segments = store.loadSlideshowSegments(clipID: clipID)
+        guard !segments.isEmpty else { return }
+
+        let plan = recomputeSlideshowTiming(segments: segments)
+        canonicalizeClipOrder()
+        persistVideoProject()
+        videoTimelineDuration = plan.totalDuration
+
+        guard rebake, let moviePath = videoPath else {
+            await refreshVideoPreview()
+            return
+        }
+        do {
+            try await PDFSlideshowService.bake(
+                pdfURL: URL(fileURLWithPath: pdfPath),
+                segments: segments,
+                timing: plan.byNumber,
+                to: URL(fileURLWithPath: moviePath),
+                progress: { [weak self] done, total in
+                    Task { @MainActor in
+                        self?.statusMessage = "Baking slideshow segment \(done) of \(total)…"
+                    }
+                }
+            )
+            await prepareVideoPreview()
+            await refreshVideoTimelineDuration()
+            statusMessage = "Slideshow baked — \(Paragraph.timecode(plan.totalDuration)) across \(segments.filter { !$0.skipped }.count) segments."
+        } catch {
+            statusMessage = "Slideshow bake failed: \(error.localizedDescription)"
+        }
+    }
+
     /// Paragraphs that have both a video anchor and generated audio, sorted by
     /// anchor time — exactly what export and preview mix into the video.
     func videoAnchoredClips() -> [VideoTimelineService.Clip] {
@@ -1375,6 +1579,9 @@ On Tuesday morning, Maya counted four blue lanterns near the station and said th
     /// previous clip (plus a small breathing gap) moves later. Recorded clips
     /// never move, so a growing take in front of one stays flagged instead.
     func autoGapVoiceClips(minimumGap: Double = 0.5) {
+        // Slideshow spans are computed from voice durations; the free-placement
+        // tidy-up would fight that math.
+        guard !isSlideshowClip else { return }
         // Re-timing only needs clip durations (in the store), not the player;
         // clamp to the video length when it is known.
         let total = videoTimelineDuration > 0 ? videoTimelineDuration : Double.greatestFiniteMagnitude
@@ -1399,7 +1606,8 @@ On Tuesday morning, Maya counted four blue lanterns near the station and said th
 
     /// Live position update while a clip is dragged (no preview rebuild).
     func moveParagraphClip(_ id: UUID, to seconds: Double) {
-        guard videoController.isLoaded,
+        guard !isSlideshowClip,
+              videoController.isLoaded,
               let index = paragraphs.firstIndex(where: { $0.id == id }),
               paragraphs[index].startTime != nil,
               !paragraphs[index].isRecorded
@@ -1430,6 +1638,10 @@ On Tuesday morning, Maya counted four blue lanterns near the station and said th
     /// clamped time that was set, or nil when no usable video is loaded.
     @discardableResult
     func setParagraphStart(_ id: UUID, at seconds: Double) -> Double? {
+        if isSlideshowClip {
+            statusMessage = "Slideshow voice positions are computed from their summaries — edit the text instead."
+            return nil
+        }
         guard videoController.isLoaded else {
             statusMessage = "Attach a video before anchoring paragraphs."
             return nil
@@ -1498,6 +1710,12 @@ On Tuesday morning, Maya counted four blue lanterns near the station and said th
     /// drops the untouched starter paragraph so it never shows up as a ghost.
     @discardableResult
     func createParagraphAtPlayhead() -> UUID? {
+        // A slideshow narrates exactly one summary per segment; new free clips
+        // would have no viewport to belong to.
+        if isSlideshowClip {
+            statusMessage = "Slideshow clips narrate one summary per segment — edit the existing entries."
+            return nil
+        }
         // Voice-only clips append sequentially — the timeline places them.
         guard hasVideoClip else {
             if let blocked = insertionBlockedMessage {
@@ -1571,6 +1789,8 @@ On Tuesday morning, Maya counted four blue lanterns near the station and said th
     /// once they are no longer the clip being written, so abandoned "+" presses
     /// never linger on the track.
     func purgeEmptyPlaceholders(keeping keptID: UUID? = nil) {
+        // Slideshow stubs are empty by design until the agent writes them.
+        guard !isSlideshowClip else { return }
         paragraphs.removeAll { paragraph in
             paragraph.id != keptID
                 && paragraph.startTime != nil
@@ -1584,6 +1804,7 @@ On Tuesday morning, Maya counted four blue lanterns near the station and said th
     /// anchored clip — leftovers from overlap-era edits that would otherwise
     /// show as confusing overlapping tracks.
     func dedupeVideoTimeline() {
+        guard !isSlideshowClip else { return }
         let anchored = paragraphs.filter { $0.startTime != nil }
         let removals = anchored.filter { paragraph in
             guard paragraph.audioPath == nil,
@@ -1640,6 +1861,7 @@ On Tuesday morning, Maya counted four blue lanterns near the station and said th
 
         do {
             _ = try await scriptExportVideo(to: destinationURL)
+            revealExportedInNewFinderWindow(destinationURL)
         } catch {
             statusMessage = "Video export failed: \(error.localizedDescription)"
         }
@@ -1702,18 +1924,16 @@ On Tuesday morning, Maya counted four blue lanterns near the station and said th
         let suffix = notes.isEmpty ? "" : " — " + notes.joined(separator: "; ") + "."
         statusMessage = "Video exported: \(destinationURL.lastPathComponent)" + suffix
             + (newlyRecorded > 0 ? " \(newlyRecorded) clip(s) recorded and locked." : "")
-        revealExportedInNewFinderWindow(destinationURL)
         persistVideoProject()
         return suffix
     }
 
-    /// Open a fresh Finder window on the export's folder with the file
-    /// selected — the answer to "where did it go".
+    /// Open a Finder window on the export's folder with the file selected —
+    /// the answer to "where did it go". UI exports only: scripted exports
+    /// (smoke suite, agents) must never touch the user's screen, and
+    /// activateFileViewerSelecting never hands the file to a player app.
     private func revealExportedInNewFinderWindow(_ url: URL) {
-        let finder = URL(fileURLWithPath: "/System/Library/CoreServices/Finder.app")
-        let configuration = NSWorkspace.OpenConfiguration()
-        configuration.activates = true
-        NSWorkspace.shared.open([url], withApplicationAt: finder, configuration: configuration)
+        NSWorkspace.shared.activateFileViewerSelecting([url])
     }
 
     /// Clips included in an export are committed: mark them recorded (locked)
@@ -1753,6 +1973,7 @@ On Tuesday morning, Maya counted four blue lanterns near the station and said th
 
         do {
             _ = try await scriptExportVoiceTrack(to: destinationURL)
+            revealExportedInNewFinderWindow(destinationURL)
         } catch {
             statusMessage = "Voice track export failed: \(error.localizedDescription)"
         }
@@ -1796,7 +2017,6 @@ On Tuesday morning, Maya counted four blue lanterns near the station and said th
         let newlyRecorded = markExportedClipsRecorded()
         statusMessage = "Voice track exported: \(destinationURL.lastPathComponent)"
             + (newlyRecorded > 0 ? " \(newlyRecorded) clip(s) recorded and locked." : "")
-        revealExportedInNewFinderWindow(destinationURL)
         persistVideoProject()
         return destinationURL.path
     }
@@ -2448,6 +2668,11 @@ On Tuesday morning, Maya counted four blue lanterns near the station and said th
             statusMessage = "Generating \(i + 1) of \(ids.count)…"
             await generateAudio(for: id)
         }
+        if isSlideshowClip {
+            // Every take changed the spans; one bake at the end picks them
+            // all up.
+            await refreshSlideshow(rebake: true)
+        }
         statusMessage = "All \(ids.count) paragraphs generated."
         isProcessing = false
     }
@@ -2563,7 +2788,14 @@ On Tuesday morning, Maya counted four blue lanterns near the station and said th
         if success {
             paragraphs[index].audioPath = outputPath
             await measureAudioDuration(for: id)
-            autoGapVoiceClips()
+            if isSlideshowClip {
+                // Spans are voice-driven: recompute anchors now, re-bake in a
+                // batch (generate all / the bake verb) so 60 pages don't
+                // re-encode 60 times.
+                await refreshSlideshow(rebake: false)
+            } else {
+                autoGapVoiceClips()
+            }
             statusMessage = "Audio generated for Paragraph \(index + 1)."
         } else {
             statusMessage = "Failed to generate audio for Paragraph \(index + 1)."

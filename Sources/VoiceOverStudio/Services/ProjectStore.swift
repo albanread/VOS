@@ -15,6 +15,7 @@
 //  so they cannot disagree. Writes are transactional; deletes cascade.
 //
 
+import CoreGraphics
 import Foundation
 import SQLite3
 
@@ -64,6 +65,20 @@ struct ClipRecord {
     var paragraphs: [Paragraph]
     /// Measured voice durations straight from voice_takes.
     var voiceDurations: [UUID: Double] = [:]
+    /// Slideshow clips carry their source PDF here; video_path points at the
+    /// baked stills movie. Defaults keep pre-slideshow call sites unchanged.
+    var isSlideshow: Bool = false
+    var sourcePDFPath: String? = nil
+}
+
+/// One viewport over a PDF page: the crop rect (PDF user space) shown while
+/// its narration speaks, plus how the viewport arrives.
+struct SlideshowSegmentRecord {
+    let number: Int
+    let page: Int
+    let crop: CGRect
+    let scrollsIn: Bool
+    var skipped: Bool
 }
 
 final class ProjectStore {
@@ -100,7 +115,7 @@ final class ProjectStore {
         sqlite3_close_v2(db)
     }
 
-    // MARK: - Schema (v2: projects -> clips -> narrations -> voice_takes)
+    // MARK: - Schema (v3: + slideshow clips, segments, narration linkage)
 
     private func createSchema() -> Bool {
         execute("""
@@ -120,6 +135,8 @@ final class ProjectStore {
             video_path            TEXT NOT NULL,
             workspace_path        TEXT,
             original_audio_volume REAL NOT NULL DEFAULT 0,
+            kind                  TEXT NOT NULL DEFAULT 'video',
+            source_pdf_path       TEXT,
             created_at            REAL NOT NULL,
             updated_at            REAL NOT NULL,
             UNIQUE(project_id, video_path)
@@ -137,6 +154,7 @@ final class ProjectStore {
             pitch           TEXT NOT NULL DEFAULT 'normal',
             output_filename TEXT NOT NULL DEFAULT '',
             audio_path      TEXT,
+            segment_number  INTEGER,
             created_at      REAL NOT NULL,
             updated_at      REAL NOT NULL
         );
@@ -151,6 +169,19 @@ final class ProjectStore {
             wav          BLOB NOT NULL,
             created_at   REAL NOT NULL,
             updated_at   REAL NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS slideshow_segments (
+            id             INTEGER PRIMARY KEY AUTOINCREMENT,
+            clip_id        INTEGER NOT NULL REFERENCES clips(id) ON DELETE CASCADE,
+            segment_number INTEGER NOT NULL,
+            page_number    INTEGER NOT NULL,
+            crop_x         REAL NOT NULL,
+            crop_y         REAL NOT NULL,
+            crop_w         REAL NOT NULL,
+            crop_h         REAL NOT NULL,
+            transition_in  TEXT NOT NULL DEFAULT 'cut',
+            skipped        INTEGER NOT NULL DEFAULT 0,
+            UNIQUE(clip_id, segment_number)
         );
         """)
     }
@@ -312,10 +343,78 @@ final class ProjectStore {
         return result
     }
 
-    /// Delete a clip; its narrations and voice blobs cascade.
+    /// Delete a clip; its narrations, voice blobs and segments cascade.
     func deleteClip(id: Int64) {
         execute("DELETE FROM clips WHERE id = ?1;", bindings: { stmt in
             sqlite3_bind_int64(stmt, 1, id)
+        })
+    }
+
+    // MARK: - Slideshow segments
+
+    func findClipIDByPDF(projectID: Int64, pdfPath: String) -> Int64? {
+        queryInt64("SELECT id FROM clips WHERE project_id = ?1 AND source_pdf_path = ?2 AND kind = 'slideshow'", bind: { stmt in
+            sqlite3_bind_int64(stmt, 1, projectID)
+            sqlite3_bind_text(stmt, 2, pdfPath, -1, SQLITE_TRANSIENT)
+        })
+    }
+
+    /// Replace a clip's segment layout in one transaction (import-time).
+    func replaceSlideshowSegments(clipID: Int64, segments: [SlideshowSegmentRecord]) {
+        execute("BEGIN IMMEDIATE;")
+        execute("DELETE FROM slideshow_segments WHERE clip_id = ?1;", bindings: { stmt in
+            sqlite3_bind_int64(stmt, 1, clipID)
+        })
+        for segment in segments {
+            execute("""
+            INSERT INTO slideshow_segments(clip_id, segment_number, page_number, crop_x, crop_y, crop_w, crop_h, transition_in, skipped)
+            VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9);
+            """, bindings: { stmt in
+                sqlite3_bind_int64(stmt, 1, clipID)
+                sqlite3_bind_int64(stmt, 2, Int64(segment.number))
+                sqlite3_bind_int64(stmt, 3, Int64(segment.page))
+                sqlite3_bind_double(stmt, 4, segment.crop.origin.x)
+                sqlite3_bind_double(stmt, 5, segment.crop.origin.y)
+                sqlite3_bind_double(stmt, 6, segment.crop.size.width)
+                sqlite3_bind_double(stmt, 7, segment.crop.size.height)
+                sqlite3_bind_text(stmt, 8, segment.scrollsIn ? "scroll" : "cut", -1, SQLITE_TRANSIENT)
+                sqlite3_bind_int(stmt, 9, segment.skipped ? 1 : 0)
+            })
+        }
+        execute("COMMIT;")
+    }
+
+    func loadSlideshowSegments(clipID: Int64) -> [SlideshowSegmentRecord] {
+        var statement: OpaquePointer?
+        defer { sqlite3_finalize(statement) }
+        guard sqlite3_prepare_v2(db, "SELECT segment_number, page_number, crop_x, crop_y, crop_w, crop_h, transition_in, skipped FROM slideshow_segments WHERE clip_id = ?1 ORDER BY segment_number", -1, &statement, nil) == SQLITE_OK,
+              let stmt = statement
+        else { return [] }
+        sqlite3_bind_int64(stmt, 1, clipID)
+        var result: [SlideshowSegmentRecord] = []
+        while sqlite3_step(stmt) == SQLITE_ROW {
+            let crop = CGRect(
+                x: sqlite3_column_double(stmt, 2),
+                y: sqlite3_column_double(stmt, 3),
+                width: sqlite3_column_double(stmt, 4),
+                height: sqlite3_column_double(stmt, 5)
+            )
+            result.append(SlideshowSegmentRecord(
+                number: Int(sqlite3_column_int64(stmt, 0)),
+                page: Int(sqlite3_column_int64(stmt, 1)),
+                crop: crop,
+                scrollsIn: (columnText(stmt, 6) ?? "cut") == "scroll",
+                skipped: sqlite3_column_int64(stmt, 7) != 0
+            ))
+        }
+        return result
+    }
+
+    func setSlideshowSegmentSkipped(clipID: Int64, number: Int, skipped: Bool) -> Bool {
+        execute("UPDATE slideshow_segments SET skipped = ?1 WHERE clip_id = ?2 AND segment_number = ?3;", bindings: { stmt in
+            sqlite3_bind_int(stmt, 1, skipped ? 1 : 0)
+            sqlite3_bind_int64(stmt, 2, clipID)
+            sqlite3_bind_int64(stmt, 3, Int64(number))
         })
     }
 
@@ -345,18 +444,22 @@ final class ProjectStore {
         let now = Date().timeIntervalSince1970
         execute("BEGIN IMMEDIATE;")
         execute("""
-        INSERT INTO clips(project_id, video_path, workspace_path, original_audio_volume, created_at, updated_at)
-        VALUES(?1, ?2, ?3, ?4, ?5, ?5)
+        INSERT INTO clips(project_id, video_path, workspace_path, original_audio_volume, kind, source_pdf_path, created_at, updated_at)
+        VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7)
         ON CONFLICT(project_id, video_path) DO UPDATE SET
             workspace_path = excluded.workspace_path,
             original_audio_volume = excluded.original_audio_volume,
+            kind = excluded.kind,
+            source_pdf_path = excluded.source_pdf_path,
             updated_at = excluded.updated_at;
         """, bindings: { stmt in
             sqlite3_bind_int64(stmt, 1, projectID)
             sqlite3_bind_text(stmt, 2, record.videoPath, -1, SQLITE_TRANSIENT)
             record.workspacePath.map { sqlite3_bind_text(stmt, 3, $0, -1, SQLITE_TRANSIENT) } ?? sqlite3_bind_null(stmt, 3)
             sqlite3_bind_double(stmt, 4, record.originalAudioVolume)
-            sqlite3_bind_double(stmt, 5, now)
+            sqlite3_bind_text(stmt, 5, record.isSlideshow ? "slideshow" : "video", -1, SQLITE_TRANSIENT)
+            record.sourcePDFPath.map { sqlite3_bind_text(stmt, 6, $0, -1, SQLITE_TRANSIENT) } ?? sqlite3_bind_null(stmt, 6)
+            sqlite3_bind_double(stmt, 7, now)
         })
         guard let clipId = queryInt64("SELECT id FROM clips WHERE project_id = ?1 AND video_path = ?2", bind: { stmt in
             sqlite3_bind_int64(stmt, 1, projectID)
@@ -416,13 +519,14 @@ final class ProjectStore {
         defer { sqlite3_finalize(statement) }
         let sql = """
         INSERT INTO narrations(id, clip_id, position, text, voice_id, gap_duration, start_time,
-                               is_recorded, speed, pitch, output_filename, audio_path, created_at, updated_at)
-        VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?13)
+                               is_recorded, speed, pitch, output_filename, audio_path, segment_number, created_at, updated_at)
+        VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?14)
         ON CONFLICT(id) DO UPDATE SET
             position = excluded.position, text = excluded.text,
             voice_id = excluded.voice_id, gap_duration = excluded.gap_duration, start_time = excluded.start_time,
             is_recorded = excluded.is_recorded, speed = excluded.speed, pitch = excluded.pitch,
             output_filename = excluded.output_filename, audio_path = excluded.audio_path,
+            segment_number = excluded.segment_number,
             updated_at = excluded.updated_at;
         """
         guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK,
@@ -440,7 +544,8 @@ final class ProjectStore {
         sqlite3_bind_text(stmt, 10, paragraph.pitch.rawValue, -1, SQLITE_TRANSIENT)
         sqlite3_bind_text(stmt, 11, paragraph.outputFilename, -1, SQLITE_TRANSIENT)
         paragraph.audioPath.map { sqlite3_bind_text(stmt, 12, $0, -1, SQLITE_TRANSIENT) } ?? sqlite3_bind_null(stmt, 12)
-        sqlite3_bind_double(stmt, 13, now)
+        paragraph.segmentNumber.map { sqlite3_bind_int64(stmt, 13, Int64($0)) } ?? sqlite3_bind_null(stmt, 13)
+        sqlite3_bind_double(stmt, 14, now)
         stepDone(stmt)
     }
 
@@ -494,9 +599,11 @@ final class ProjectStore {
         var videoPath = ""
         var workspacePath: String?
         var volume: Double = 0
+        var isSlideshow = false
+        var sourcePDFPath: String?
         var header: OpaquePointer?
         defer { sqlite3_finalize(header) }
-        guard sqlite3_prepare_v2(db, "SELECT video_path, workspace_path, original_audio_volume FROM clips WHERE id = ?1", -1, &header, nil) == SQLITE_OK,
+        guard sqlite3_prepare_v2(db, "SELECT video_path, workspace_path, original_audio_volume, kind, source_pdf_path FROM clips WHERE id = ?1", -1, &header, nil) == SQLITE_OK,
               let hdr = header
         else { return nil }
         sqlite3_bind_int64(hdr, 1, clipID)
@@ -504,6 +611,8 @@ final class ProjectStore {
         videoPath = columnText(hdr, 0) ?? ""
         workspacePath = columnText(hdr, 1)
         volume = sqlite3_column_double(hdr, 2)
+        isSlideshow = (columnText(hdr, 3) ?? "video") == "slideshow"
+        sourcePDFPath = columnText(hdr, 4)
         if let recorded = workspacePath, !FileManager.default.fileExists(atPath: recorded) {
             workspacePath = nil
         }
@@ -514,7 +623,7 @@ final class ProjectStore {
         defer { sqlite3_finalize(statement) }
         let sql = """
         SELECT n.id, n.text, n.voice_id, n.gap_duration, n.start_time, n.is_recorded, n.speed, n.pitch,
-               n.output_filename, n.audio_path, t.duration, t.wav
+               n.output_filename, n.audio_path, n.segment_number, t.duration, t.wav
         FROM narrations n LEFT JOIN voice_takes t ON t.narration_id = n.id
         WHERE n.clip_id = ?1
         ORDER BY n.position;
@@ -534,11 +643,14 @@ final class ProjectStore {
             let pitch = Paragraph.PitchPreset(rawValue: columnText(stmt, 7) ?? "normal") ?? .normal
             let outputFilename = columnText(stmt, 8) ?? ""
             var audioPath = columnText(stmt, 9)
-            let takeDuration = sqlite3_column_type(stmt, 10) == SQLITE_NULL ? nil : sqlite3_column_double(stmt, 10)
+            let segmentNumber = sqlite3_column_type(stmt, 10) == SQLITE_NULL
+                ? nil
+                : Int(sqlite3_column_int64(stmt, 10))
+            let takeDuration = sqlite3_column_type(stmt, 11) == SQLITE_NULL ? nil : sqlite3_column_double(stmt, 11)
 
             // The blob is the truth; the file is a cache.
-            if sqlite3_column_type(stmt, 11) == SQLITE_BLOB {
-                let blobLength = Int(sqlite3_column_bytes(stmt, 11))
+            if sqlite3_column_type(stmt, 12) == SQLITE_BLOB {
+                let blobLength = Int(sqlite3_column_bytes(stmt, 12))
                 if blobLength > 0, let bytes = sqlite3_column_blob(stmt, 11) {
                     let data = Data(bytes: bytes, count: blobLength)
                     let cacheURL = materializationURL(idString: idString, videoPath: videoPath, workspacePath: workspacePath, fallback: audioPath)
@@ -567,7 +679,8 @@ final class ProjectStore {
                 pitch: pitch,
                 audioPath: audioPath,
                 isGenerating: false,
-                outputFilename: outputFilename
+                outputFilename: outputFilename,
+                segmentNumber: segmentNumber
             ))
         }
 
@@ -577,7 +690,9 @@ final class ProjectStore {
             workspacePath: workspacePath,
             originalAudioVolume: volume,
             paragraphs: paragraphs,
-            voiceDurations: durations
+            voiceDurations: durations,
+            isSlideshow: isSlideshow,
+            sourcePDFPath: sourcePDFPath
         )
     }
 
@@ -605,20 +720,51 @@ final class ProjectStore {
 
     private func migrateIfNeeded() -> Bool {
         let version = metaGet("schemaVersion")
-        if version == "2" {
+        if version == "3" {
             // Schema creation must come after any v1 rename: CREATE TABLE IF
             // NOT EXISTS would silently keep the old table shapes and the new
             // indexes would then fail against missing columns.
             return createSchema()
         }
-        if version == "1" {
+        if version == "2" {
+            guard migrateV2ToV3() else { return false }
+        } else if version == "1" {
             guard migrateV1ToV2() else { return false }
+            guard migrateV2ToV3() else { return false }
         } else {
             guard createSchema() else { return false }
             migrateLegacyJSON()
         }
-        metaSet("schemaVersion", "2")
+        metaSet("schemaVersion", "3")
         return true
+    }
+
+    /// v3 adds slideshow support: clip kind + source PDF, the per-clip
+    /// segment table, and the narration ↔ segment linkage.
+    private func migrateV2ToV3() -> Bool {
+        guard !columnExists("clips", "kind") else {
+            return createSchema()
+        }
+        let ok = execute("ALTER TABLE clips ADD COLUMN kind TEXT NOT NULL DEFAULT 'video';")
+            && execute("ALTER TABLE clips ADD COLUMN source_pdf_path TEXT;")
+            && execute("ALTER TABLE narrations ADD COLUMN segment_number INTEGER;")
+        guard ok, createSchema() else { return false }
+        debugLog("DEBUG:: [Store] v2 database migrated to v3 (slideshow segments)")
+        return true
+    }
+
+    private func columnExists(_ table: String, _ column: String) -> Bool {
+        var statement: OpaquePointer?
+        defer { sqlite3_finalize(statement) }
+        guard sqlite3_prepare_v2(db, "PRAGMA table_info(\(table));", -1, &statement, nil) == SQLITE_OK,
+              let stmt = statement
+        else { return false }
+        while sqlite3_step(stmt) == SQLITE_ROW {
+            if let name = columnText(stmt, 1), name == column {
+                return true
+            }
+        }
+        return false
     }
 
     /// v1 keyed projects by video path with no project entity. Each v1

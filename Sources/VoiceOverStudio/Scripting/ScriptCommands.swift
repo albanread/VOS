@@ -419,3 +419,103 @@ final class VOSDiscardCommand: NSScriptCommand {
         }
     }
 }
+
+// MARK: - Slideshow
+
+@objc(VOSImportSlideshowCommand)
+final class VOSImportSlideshowCommand: NSScriptCommand {
+    override func performDefaultImplementation() -> Any? {
+        guard let model = vosModel() else { return vosFail(vosNoAppMessage) }
+        guard let path: String = vosArgument("FromPath"), !path.isEmpty else {
+            return vosFail("import slideshow requires a 'from' parameter with a PDF path.")
+        }
+
+        return vosRunAsync {
+            try await model.scriptImportSlideshow(pdfPath: path)
+        }
+    }
+}
+
+@objc(VOSSlideshowInfoCommand)
+final class VOSSlideshowInfoCommand: NSScriptCommand {
+    override func performDefaultImplementation() -> Any? {
+        guard let model = vosModel() else { return vosFail(vosNoAppMessage) }
+        return MainActor.assumeIsolated {
+            model.slideshowInfoText()
+        }
+    }
+}
+
+@objc(VOSDumpSlideshowCommand)
+final class VOSDumpSlideshowCommand: NSScriptCommand {
+    override func performDefaultImplementation() -> Any? {
+        guard let model = vosModel() else { return vosFail(vosNoAppMessage) }
+        guard let path: String = vosArgument("ToPath"), !path.isEmpty else {
+            return vosFail("dump slideshow requires a 'to' parameter with a destination folder.")
+        }
+
+        let url = URL(fileURLWithPath: (path as NSString).expandingTildeInPath)
+        return vosRunAsync {
+            try await model.scriptDumpSlideshow(to: url)
+        }
+    }
+}
+
+@objc(VOSNarrateSegmentCommand)
+final class VOSNarrateSegmentCommand: NSScriptCommand {
+    override func performDefaultImplementation() -> Any? {
+        guard let model = vosModel() else { return vosFail(vosNoAppMessage) }
+        guard let number = (arguments?["Number"] as? NSNumber)?.intValue else {
+            return vosFail("narrate segment requires a 'segment' parameter, for example: narrate segment 3 with \"...\".")
+        }
+        guard let text: String = vosArgument("WithText"), !text.isEmpty else {
+            return vosFail("narrate segment requires a 'with text' parameter holding the summary.")
+        }
+
+        return vosRunAsync {
+            try await model.scriptNarrateSegment(number: number, text: text)
+            return model.statusMessage
+        }
+    }
+}
+
+@objc(VOSSkipSegmentCommand)
+final class VOSSkipSegmentCommand: NSScriptCommand {
+    override func performDefaultImplementation() -> Any? {
+        guard let model = vosModel() else { return vosFail(vosNoAppMessage) }
+        guard let number = (arguments?["Number"] as? NSNumber)?.intValue else {
+            return vosFail("skip segment requires a 'segment' parameter, for example: skip segment 4.")
+        }
+
+        return vosRunAsync {
+            try await model.scriptSkipSegment(number: number, skipped: true)
+            return model.statusMessage
+        }
+    }
+}
+
+@objc(VOSUnskipSegmentCommand)
+final class VOSUnskipSegmentCommand: NSScriptCommand {
+    override func performDefaultImplementation() -> Any? {
+        guard let model = vosModel() else { return vosFail(vosNoAppMessage) }
+        guard let number = (arguments?["Number"] as? NSNumber)?.intValue else {
+            return vosFail("unskip segment requires a 'segment' parameter, for example: unskip segment 4.")
+        }
+
+        return vosRunAsync {
+            try await model.scriptSkipSegment(number: number, skipped: false)
+            return model.statusMessage
+        }
+    }
+}
+
+@objc(VOSBakeSlideshowCommand)
+final class VOSBakeSlideshowCommand: NSScriptCommand {
+    override func performDefaultImplementation() -> Any? {
+        guard let model = vosModel() else { return vosFail(vosNoAppMessage) }
+
+        return vosRunAsync {
+            try await model.scriptBakeSlideshow()
+        }
+    }
+}

@@ -170,6 +170,11 @@ struct VoiceOverStudioApp: App {
                 }
                 .keyboardShortcut("c", modifiers: [.command, .shift])
 
+                Button("Import Slideshow from PDF…") {
+                    viewModel.importSlideshowViaPanel()
+                }
+                .keyboardShortcut("l", modifiers: [.command, .shift])
+
                 Divider()
 
                 Menu("Open Recent") {

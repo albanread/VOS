@@ -399,6 +399,63 @@
             <result type="text" description="The path that was written."/>
         </command>
 
+        <!-- Slideshow: a PDF manual becomes a narrated slide video. The agent
+             reviews dumped segments, writes one summary per segment, skips
+             content-free ones, and generates with the reference voice. -->
+
+        <command name="import slideshow" code="VOSSimsl" description="Import a PDF as a slideshow clip: page margins are trimmed, portrait pages split into half-page viewports, one empty narration stub is created per segment, and the initial silent stills movie is baked. Re-importing the same PDF reopens its clip. Waits until baked.">
+            <cocoa class="VOSImportSlideshowCommand"/>
+            <parameter name="from" code="kPth" type="text" description="Path to the PDF document.">
+                <cocoa key="FromPath"/>
+            </parameter>
+            <result type="text" description="The status report after the import."/>
+        </command>
+
+        <command name="slideshow info" code="VOSSslin" description="Summary of the active slideshow clip: source PDF, baked movie, segment count, narration progress.">
+            <cocoa class="VOSSlideshowInfoCommand"/>
+            <result type="text" description="One line per fact."/>
+        </command>
+
+        <command name="dump slideshow" code="VOSSdssl" description="Write the agent's review material for the active slideshow: per-segment text files, viewport PNGs, and a manifest.json with skips and current narrations. Waits until rendered.">
+            <cocoa class="VOSDumpSlideshowCommand"/>
+            <parameter name="to" code="kPth" type="text" description="Destination folder.">
+                <cocoa key="ToPath"/>
+            </parameter>
+            <result type="text" description="The manifest.json path."/>
+        </command>
+
+        <command name="narrate segment" code="VOSSsgnr" description="Write a segment's narration summary — the agent's spoken summary of that half page, not the page text itself.">
+            <cocoa class="VOSNarrateSegmentCommand"/>
+            <parameter name="number" code="kNum" type="integer" description="1-based segment number from the manifest.">
+                <cocoa key="Number"/>
+            </parameter>
+            <parameter name="script" code="kTxt" type="text" description="The narration summary to speak over this segment.">
+                <cocoa key="WithText"/>
+            </parameter>
+            <result type="text" description="The status message after the text is stored."/>
+        </command>
+
+        <command name="skip segment" code="VOSSsgsk" description="Drop a content-free segment from the baked movie. Its narration stub survives in the transcript. Re-bakes the movie.">
+            <cocoa class="VOSSkipSegmentCommand"/>
+            <parameter name="number" code="kNum" type="integer" description="1-based segment number from the manifest.">
+                <cocoa key="Number"/>
+            </parameter>
+            <result type="text" description="The status message after the skip."/>
+        </command>
+
+        <command name="unskip segment" code="VOSSusgk" description="Restore a previously skipped segment to the slideshow. Re-bakes the movie.">
+            <cocoa class="VOSUnskipSegmentCommand"/>
+            <parameter name="number" code="kNum" type="integer" description="1-based segment number from the manifest.">
+                <cocoa key="Number"/>
+            </parameter>
+            <result type="text" description="The status message after the restore."/>
+        </command>
+
+        <command name="bake slideshow" code="VOSSbksl" description="Recompute segment spans from the current voice durations and rewrite the silent stills movie. Waits until written.">
+            <cocoa class="VOSBakeSlideshowCommand"/>
+            <result type="text" description="The status report after the bake."/>
+        </command>
+
         <!-- Element-targeted commands: the direct parameter is a paragraph or
              jingle specifier; dispatch goes to the handler methods declared in
              responds-to on those classes. -->

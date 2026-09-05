@@ -241,4 +241,175 @@ extension ProjectViewModel {
         detachVideo()
         return previous
     }
+
+    // MARK: - Slideshow
+
+    private func slideshowUnavailable(_ code: Int, _ message: String) -> Error {
+        NSError(
+            domain: "ProjectViewModel",
+            code: code,
+            userInfo: [NSLocalizedDescriptionKey: message]
+        )
+    }
+
+    @discardableResult
+    func scriptImportSlideshow(pdfPath: String) async throws -> String {
+        let expanded = (pdfPath as NSString).expandingTildeInPath
+        guard FileManager.default.fileExists(atPath: expanded) else {
+            throw slideshowUnavailable(-51, "No PDF file at '\(expanded)'.")
+        }
+        return try await importSlideshow(pdfURL: URL(fileURLWithPath: expanded))
+    }
+
+    /// The agent's eyes: one text file + one viewport PNG per segment plus a
+    /// manifest.json describing segments, skips and current narrations.
+    /// Returns the manifest path.
+    @discardableResult
+    func scriptDumpSlideshow(to directory: URL) async throws -> String {
+        guard isSlideshowClip, let clipID = currentClipID, let store = projectStore,
+              let pdfPath = slideshowPDFPath
+        else {
+            throw slideshowUnavailable(-52, "The active clip is not a slideshow. Use 'import slideshow' first.")
+        }
+        let segments = store.loadSlideshowSegments(clipID: clipID)
+        guard !segments.isEmpty else {
+            throw slideshowUnavailable(-53, "The slideshow has no segments.")
+        }
+
+        let manifestURL = directory.appendingPathComponent("manifest.json", isDirectory: false)
+
+        // Rendering the PNGs is the slow part; keep the event suspended for it.
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            DispatchQueue.global(qos: .userInitiated).async {
+                do {
+                    try PDFSlideshowService.dumpSegmentAssets(
+                        segments: segments,
+                        pdfURL: URL(fileURLWithPath: pdfPath),
+                        into: directory
+                    )
+                    continuation.resume()
+                } catch {
+                    continuation.resume(throwing: error)
+                }
+            }
+        }
+
+        struct SegmentManifest: Codable {
+            let number: Int
+            let page: Int
+            let skipped: Bool
+            let scrollsIn: Bool
+            let crop: [Double]
+            let textFile: String
+            let imageFile: String
+            let narration: String
+            let hasAudio: Bool
+            let narrationStart: Double?
+            let estimatedSpan: Double
+        }
+        struct Manifest: Codable {
+            let pdf: String
+            let movie: String
+            let segments: [SegmentManifest]
+        }
+
+        var entries: [SegmentManifest] = []
+        for segment in segments {
+            let paragraph = paragraphs.first { $0.segmentNumber == segment.number }
+            let stem = String(format: "seg-%03d", segment.number)
+            let voiceLength = paragraph.map { audioDuration(forParagraphID: $0.id) } ?? 0
+            let pan = segment.scrollsIn ? PDFSlideshowService.panSeconds : 0
+            let span = max(
+                pan + PDFSlideshowService.leadSeconds + voiceLength + PDFSlideshowService.tailSeconds,
+                PDFSlideshowService.minimumDwellSeconds
+            )
+            entries.append(SegmentManifest(
+                number: segment.number,
+                page: segment.page,
+                skipped: segment.skipped,
+                scrollsIn: segment.scrollsIn,
+                crop: [segment.crop.minX, segment.crop.minY, segment.crop.width, segment.crop.height],
+                textFile: "\(stem).txt",
+                imageFile: "\(stem).png",
+                narration: paragraph?.text ?? "",
+                hasAudio: paragraph?.audioPath != nil,
+                narrationStart: segment.skipped ? nil : paragraph?.startTime,
+                estimatedSpan: segment.skipped ? 0 : span
+            ))
+        }
+
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        let data = try encoder.encode(Manifest(pdf: pdfPath, movie: videoPath ?? "", segments: entries))
+        try data.write(to: manifestURL, options: .atomic)
+        statusMessage = "Slideshow dumped: \(segments.count) segments → \(directory.path)"
+        return manifestURL.path
+    }
+
+    /// Write a segment's narration summary (the agent's words, not the page's).
+    func scriptNarrateSegment(number: Int, text: String) async throws {
+        guard isSlideshowClip else {
+            throw slideshowUnavailable(-52, "The active clip is not a slideshow. Use 'import slideshow' first.")
+        }
+        guard let index = paragraphs.firstIndex(where: { $0.segmentNumber == number }) else {
+            throw slideshowUnavailable(-54, "No segment \(number). Use 'slideshow info' to see the range.")
+        }
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        paragraphs[index].text = trimmed
+        paragraphs[index].isRecorded = false
+        // Estimates changed: refresh anchor math; the movie re-bakes when the
+        // voices are generated.
+        await refreshSlideshow(rebake: false)
+        let words = trimmed.split(whereSeparator: \.isWhitespace).count
+        statusMessage = "Segment \(number) narration set (\(words) words)."
+    }
+
+    /// Mark a content-free segment to be dropped from the baked movie (its
+    /// narration stub survives, unanchored, for the transcript).
+    func scriptSkipSegment(number: Int, skipped: Bool) async throws {
+        guard isSlideshowClip, let clipID = currentClipID, let store = projectStore else {
+            throw slideshowUnavailable(-52, "The active clip is not a slideshow. Use 'import slideshow' first.")
+        }
+        guard store.setSlideshowSegmentSkipped(clipID: clipID, number: number, skipped: skipped) else {
+            throw slideshowUnavailable(-54, "No segment \(number). Use 'slideshow info' to see the range.")
+        }
+        await refreshSlideshow(rebake: true)
+        statusMessage = skipped
+            ? "Segment \(number) skipped — it will not appear in the baked movie."
+            : "Segment \(number) restored to the slideshow."
+    }
+
+    /// Recompute spans from the current voices and rewrite the stills movie.
+    @discardableResult
+    func scriptBakeSlideshow() async throws -> String {
+        guard isSlideshowClip else {
+            throw slideshowUnavailable(-52, "The active clip is not a slideshow. Use 'import slideshow' first.")
+        }
+        await refreshSlideshow(rebake: true)
+        return statusMessage
+    }
+
+    /// Readable summary for scripts: paths, segment range, narration state.
+    func slideshowInfoText() -> String {
+        guard isSlideshowClip, let clipID = currentClipID, let store = projectStore else {
+            return "The active clip is not a slideshow."
+        }
+        let segments = store.loadSlideshowSegments(clipID: clipID)
+        guard !segments.isEmpty else { return "The slideshow has no segments." }
+        let skipped = segments.filter(\.skipped).count
+        let written = segments.filter { segment in
+            guard let paragraph = paragraphs.first(where: { $0.segmentNumber == segment.number })
+            else { return false }
+            return !paragraph.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }.count
+        let voiced = segments.filter { segment in
+            paragraphs.first(where: { $0.segmentNumber == segment.number })?.audioPath != nil
+        }.count
+        return [
+            "PDF: \(slideshowPDFPath ?? "?")",
+            "Movie: \(videoPath ?? "?")",
+            "Segments: \(segments.count) across pages \(segments.first?.page ?? 0)–\(segments.last?.page ?? 0)",
+            "Narration: \(written) written, \(voiced) voiced, \(skipped) skipped."
+        ].joined(separator: "\n")
+    }
 }

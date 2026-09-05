@@ -62,6 +62,9 @@ struct Paragraph: Identifiable, Codable {
     var audioPath: String? // Path to generated audio file
     var isGenerating: Bool = false // transient UI state, excluded from Codable
     var outputFilename: String = ""
+    /// 1-based slideshow segment this narration belongs to (nil on free clips).
+    /// Persisted as narrations.segment_number; not part of the JSON transcript.
+    var segmentNumber: Int? = nil
 
     enum CodingKeys: String, CodingKey {
         case id, text, voiceID, voiceSid, gapDuration, startTime, isRecorded, speed, pitch, audioPath, outputFilename
@@ -78,7 +81,8 @@ struct Paragraph: Identifiable, Codable {
         pitch: PitchPreset = .normal,
         audioPath: String? = nil,
         isGenerating: Bool = false,
-        outputFilename: String = ""
+        outputFilename: String = "",
+        segmentNumber: Int? = nil
     ) {
         self.id = id
         self.text = text
@@ -91,6 +95,7 @@ struct Paragraph: Identifiable, Codable {
         self.audioPath = audioPath
         self.isGenerating = isGenerating
         self.outputFilename = outputFilename
+        self.segmentNumber = segmentNumber
     }
 
     init(from decoder: Decoder) throws {

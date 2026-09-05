@@ -27,6 +27,7 @@ Like many A.I. features this is very non-deterministic,  meaning that voices dri
 - Reference Voice workflow: record a short sample, optionally run speech cleanup with **Clean and Save**, then use that enrolled voice for cloning-style generation.
 - Guided setup: compute-tier presets choose recommended GGUF and Qwen model repos, with managed downloads under `~/Library/vos2026`.
 - Project IO: save/load transcript JSON and re-generate missing paragraph audio.
+- PDF slideshow: import a manual as a narrated slide video (`Project ▸ Import Slideshow from PDF…` or the `import slideshow` verb). Page margins are trimmed to the content, portrait pages show half a page at a time with an eased scroll between halves, and each segment carries one narration summary. An agent writes the summaries via `narrate segment` / `skip segment` (see `slideshow_recital_skill.md`); a human reviews the transcript in the timeline afterwards. Exports ride the usual QuickTime-safe video export path.
 
 ## Runtime architecture
 - **LLM**: local llama.cpp static libraries linked through the `LLamaC` target.

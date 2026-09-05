@@ -134,6 +134,31 @@ else
   FAIL=$((FAIL+1))
 fi
 
+# Slideshow: a generated test PDF becomes a narrated slide clip without any
+# TTS models — narration stubs, skip/unskip, dump, and a minimum-dwell bake.
+SDIR=$(mktemp -d)
+SPDF="$SDIR/smoke-manual.pdf"
+SDUMP="$SDIR/dump"
+swift "$SCRIPT_DIR/make-test-pdf.swift" "$SPDF" >/dev/null
+
+echo "slideshow:"
+check "import slideshow"     "import slideshow from \"$SPDF\""
+check "slideshow info"       'slideshow info'
+check "narrate segment"      'narrate segment number 1 script "Smoke summary of the first segment."'
+check "skip segment"         'skip segment number 5'
+check "unskip segment"       'unskip segment number 5'
+check "dump slideshow"       "dump slideshow to \"$SDUMP\""
+check "bake slideshow"       'bake slideshow'
+if [[ -s "$SDUMP/manifest.json" && -s "$SDUMP/seg-001.png" ]]; then
+  echo "  ok   dump assets exist ($(ls "$SDUMP" | wc -l | tr -d ' ') files)"
+  PASS=$((PASS+1))
+else
+  echo "  FAIL dump assets missing in $SDUMP"
+  FAIL=$((FAIL+1))
+fi
+# Back to the video path for any checks that assume it.
+check "detach after slides"  'detach video'
+
 echo
 echo "passed $PASS, failed $FAIL"
 exit $((FAIL > 0))
