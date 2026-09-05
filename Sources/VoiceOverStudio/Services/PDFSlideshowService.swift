@@ -91,13 +91,26 @@ enum PDFSlideshowService {
         for pageIndex in 0..<document.pageCount {
             guard let page = document.page(at: pageIndex) else { continue }
             let mediaBox = page.bounds(for: .mediaBox)
-            let content = contentBox(for: page, in: mediaBox)
+            let lines = lineRects(page, within: mediaBox)
             let text = (page.string ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+
+            // Text pages: the union of line rects IS the content. Pixel scans
+            // key on decoration (page cards, rules, shadows) and can inflate
+            // the box to the whole page, which is how blank viewports happen.
+            // Image-only pages (no extractable lines) fall back to the scan.
+            let content: CGRect
+            if let union = lines.first.map({ _ in lines.reduce(lines[0]) { $0.union($1) } }) {
+                content = union
+            } else {
+                content = contentBox(for: page, in: mediaBox)
+            }
+
             let crops: [CGRect]
             if content.width / content.height >= 1.25 {
                 crops = [padded(content, within: mediaBox)]
             } else {
-                crops = splitAtLineGaps(page, content: content, mediaBox: mediaBox)
+                crops = splitAtLineGaps(page, lines: lines, ink: inkMap(for: page, in: mediaBox),
+                                        content: content, mediaBox: mediaBox)
             }
             for (halfIndex, crop) in crops.enumerated() {
                 segments.append(SegmentLayout(
@@ -113,6 +126,14 @@ enum PDFSlideshowService {
         return Layout(pageCount: document.pageCount, segments: segments)
     }
 
+    /// Text line rects on the page, top of the page first.
+    private static func lineRects(_ page: PDFPage, within mediaBox: CGRect) -> [CGRect] {
+        (page.selection(for: mediaBox)?.selectionsByLine() ?? [])
+            .map { $0.bounds(for: page) }
+            .filter { !$0.isEmpty }
+            .sorted { $0.midY > $1.midY }
+    }
+
     /// Margin around the ink so ascenders, descenders and diagram edges sit
     /// inside the viewport instead of being sliced by it. Horizontal margin
     /// is wider so text blocks breathe on screen.
@@ -125,20 +146,19 @@ enum PDFSlideshowService {
             .intersection(mediaBox)
     }
 
-    /// Break portrait content at whitespace: collect the page's line rects,
-    /// find the inter-line gap closest to the vertical middle (largest gap
-    /// wins within a band around it), and cut at its centre. The split edge
-    /// gets NO padding — it is mid-gap by construction, and padding there
-    /// would eat into the neighbouring line; only the outer edges and the
-    /// sides are padded. Pages without extractable lines (pure images) fall
-    /// back to a midpoint cut.
-    private static func splitAtLineGaps(_ page: PDFPage, content: CGRect, mediaBox: CGRect) -> [CGRect] {
-        let lines = (page.selection(for: page.bounds(for: .mediaBox))?
-            .selectionsByLine() ?? [])
-            .map { $0.bounds(for: page) }
-            .filter { !$0.isEmpty && $0.midY >= content.minY && $0.midY <= content.maxY }
-            .sorted { $0.midY > $1.midY } // top of the page first
-
+    /// Break portrait content at whitespace: find the inter-line gap closest
+    /// to the vertical middle (largest gap wins within a band around it) and
+    /// cut at its centre. The split edge gets NO padding — it is mid-gap by
+    /// construction; only the outer edges and the sides are padded. A half
+    /// that would hold nothing (no lines, no ink — decoration margins, empty
+    /// card regions) is never emitted: the page becomes one viewport instead.
+    private static func splitAtLineGaps(
+        _ page: PDFPage,
+        lines: [CGRect],
+        ink: InkMap,
+        content: CGRect,
+        mediaBox: CGRect
+    ) -> [CGRect] {
         func halves(splitAt splitY: CGFloat) -> [CGRect] {
             [
                 CGRect(x: content.minX - cropPaddingX,
@@ -154,7 +174,18 @@ enum PDFSlideshowService {
             ]
         }
 
-        guard lines.count >= 2 else { return halves(splitAt: content.midY) }
+        func hasContent(_ rect: CGRect) -> Bool {
+            if lines.contains(where: { $0.midY >= rect.minY && $0.midY <= rect.maxY }) {
+                return true
+            }
+            return ink.containsInk(in: rect)
+        }
+
+        guard lines.count >= 2 else {
+            let parts = halves(splitAt: content.midY)
+            if hasContent(parts[0]), hasContent(parts[1]) { return parts }
+            return [padded(content, within: mediaBox)]
+        }
 
         // Gaps between consecutive lines, top to bottom: the bottom edge of
         // the upper line minus the top edge of the lower one.
@@ -165,7 +196,11 @@ enum PDFSlideshowService {
                 candidates.append((position: lines[index].minY - gap / 2, size: gap))
             }
         }
-        guard !candidates.isEmpty else { return halves(splitAt: content.midY) }
+        guard !candidates.isEmpty else {
+            let parts = halves(splitAt: content.midY)
+            if hasContent(parts[0]), hasContent(parts[1]) { return parts }
+            return [padded(content, within: mediaBox)]
+        }
 
         let middle = content.midY
         let band = content.height * 0.20
@@ -180,7 +215,67 @@ enum PDFSlideshowService {
         } else {
             chosen = middle
         }
-        return halves(splitAt: chosen)
+        let parts = halves(splitAt: chosen)
+        if hasContent(parts[0]), hasContent(parts[1]) { return parts }
+        return [padded(content, within: mediaBox)]
+    }
+
+    /// Grayscale ink map at low resolution, used to detect real ink inside
+    /// regions that have no text lines (diagrams, images) and to refuse
+    /// blank viewports.
+    struct InkMap {
+        let pixels: [UInt8]
+        let width: Int
+        let height: Int
+        let scale: Double     // pixels per PDF point
+        let pageHeight: Double
+
+        /// Dark ink anywhere inside `rect` (PDF user space)?
+        func containsInk(in rect: CGRect, minimumPixels: Int = 4) -> Bool {
+            guard width > 1, height > 1, scale > 0, rect.width > 0, rect.height > 0 else {
+                return false
+            }
+            let x0 = max(0, min(width - 1, Int(rect.minX * scale)))
+            let x1 = max(0, min(width - 1, Int(rect.maxX * scale)))
+            // Memory row 0 is the image's top row; PDF y=0 is the page bottom.
+            let yTop = max(0, min(height - 1, Int((pageHeight - rect.maxY) * scale)))
+            let yBottom = max(0, min(height - 1, Int((pageHeight - rect.minY) * scale)))
+            guard x1 >= x0, yBottom >= yTop else { return false }
+            var dark = 0
+            for row in yTop...yBottom {
+                for column in x0...x1 where pixels[row * width + column] < 210 {
+                    dark += 1
+                    if dark >= minimumPixels { return true }
+                }
+            }
+            return false
+        }
+    }
+
+    private static func inkMap(for page: PDFPage, in mediaBox: CGRect) -> InkMap {
+        let width = 160
+        guard mediaBox.width > 1, mediaBox.height > 1 else {
+            return InkMap(pixels: [], width: 0, height: 0, scale: 0, pageHeight: mediaBox.height)
+        }
+        let scale = Double(width) / mediaBox.width
+        let height = max(1, Int((mediaBox.height * scale).rounded()))
+        var pixels = [UInt8](repeating: 255, count: width * height)
+        pixels.withUnsafeMutableBytes { buffer in
+            guard let context = CGContext(
+                data: buffer.baseAddress,
+                width: width,
+                height: height,
+                bitsPerComponent: 8,
+                bytesPerRow: width,
+                space: CGColorSpaceCreateDeviceGray(),
+                bitmapInfo: CGImageAlphaInfo.none.rawValue
+            ) else { return }
+            context.setFillColor(gray: 1, alpha: 1)
+            context.fill(CGRect(x: 0, y: 0, width: width, height: height))
+            context.scaleBy(x: CGFloat(scale), y: CGFloat(scale))
+            page.draw(with: .mediaBox, to: context)
+        }
+        return InkMap(pixels: pixels, width: width, height: height, scale: scale, pageHeight: mediaBox.height)
     }
 
     /// Pixel scan for the page's ink: render the page small and grayscale,
@@ -387,16 +482,25 @@ enum PDFSlideshowService {
 
         let width = Int(canvasSize.width)
         let height = Int(canvasSize.height)
-        var buffers: [CVPixelBuffer] = []
-        for _ in 0..<4 {
-            var buffer: CVPixelBuffer?
-            CVPixelBufferCreate(nil, width, height, kCVPixelFormatType_32ARGB, nil, &buffer)
-            guard let created = buffer else {
-                throw SlideshowError.writerFailed("could not allocate pixel buffers")
+
+        // Every frame gets its OWN buffer from the adaptor's pool. Reusing a
+        // small ring of buffers races the encoder — it can still hold a
+        // buffer we re-render, and the half-drawn frame (background, no
+        // content) then HOLDS on screen for the whole still. Pool allocation
+        // only recycles buffers the writer has released, so this is safe.
+        func acquireBuffer() throws -> CVPixelBuffer {
+            if let pool = adaptor.pixelBufferPool {
+                var pooled: CVPixelBuffer?
+                CVPixelBufferPoolCreatePixelBuffer(nil, pool, &pooled)
+                if let pooled { return pooled }
             }
-            buffers.append(created)
+            var fresh: CVPixelBuffer?
+            CVPixelBufferCreate(nil, width, height, kCVPixelFormatType_32ARGB, nil, &fresh)
+            guard let fresh else {
+                throw SlideshowError.writerFailed("could not allocate a pixel buffer")
+            }
+            return fresh
         }
-        var bufferCursor = 0
 
         func renderInto(_ buffer: CVPixelBuffer, page: PDFPage?, crop: CGRect) throws {
             CVPixelBufferLockBaseAddress(buffer, [])
@@ -432,12 +536,6 @@ enum PDFSlideshowService {
             }
         }
 
-        func nextBuffer() -> CVPixelBuffer {
-            let buffer = buffers[bufferCursor % buffers.count]
-            bufferCursor += 1
-            return buffer
-        }
-
         var previousCrop: CGRect?
         for (index, entry) in plan.enumerated() {
             progress?(index + 1, plan.count)
@@ -449,14 +547,14 @@ enum PDFSlideshowService {
                 for step in 0...steps {
                     let fraction = easeInOut(Double(step) / Double(steps))
                     let crop = interpolate(from, entry.record.crop, fraction)
-                    let buffer = nextBuffer()
+                    let buffer = try acquireBuffer()
                     try renderInto(buffer, page: entry.page, crop: crop)
                     try append(buffer, atSeconds: entry.timing.start + pan * Double(step) / Double(steps))
                 }
             } else {
                 // A cut (or the very first segment): one still frame that
                 // holds until the next frame's timestamp.
-                let buffer = nextBuffer()
+                let buffer = try acquireBuffer()
                 try renderInto(buffer, page: entry.page, crop: entry.record.crop)
                 try append(buffer, atSeconds: entry.timing.start)
             }
@@ -469,10 +567,10 @@ enum PDFSlideshowService {
         // hold lands on the closer and the movie ends at totalDuration + 1
         // frame instead of totalDuration + the whole final gap.
         if let last = plan.last {
-            let buffer = nextBuffer()
+            let buffer = try acquireBuffer()
             try renderInto(buffer, page: last.page, crop: last.record.crop)
             try append(buffer, atSeconds: totalDuration)
-            let buffer2 = nextBuffer()
+            let buffer2 = try acquireBuffer()
             try renderInto(buffer2, page: last.page, crop: last.record.crop)
             try append(buffer2, atSeconds: totalDuration + 1.0 / Double(framesPerSecond))
         }

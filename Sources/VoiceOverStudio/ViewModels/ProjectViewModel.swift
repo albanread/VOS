@@ -1449,8 +1449,10 @@ On Tuesday morning, Maya counted four blue lanterns near the station and said th
 
     /// Rebuild the segment layout from the PDF with the current splitter
     /// (content-aware breaks at whitespace), keeping narrations, voices and
-    /// skip flags — segment numbers stay stable while the page count holds.
-    /// Re-bakes at the end.
+    /// skip flags. Blank halves can disappear, so segment numbers may shift:
+    /// narrations and skips re-link to the new segment covering the same
+    /// page region (largest crop overlap), and orphans stay in the transcript
+    /// unanchored. Re-bakes at the end.
     @discardableResult
     func reSplitSlideshow() async throws -> String {
         guard isSlideshowClip, let clipID = currentClipID, let store = projectStore,
@@ -1465,20 +1467,69 @@ On Tuesday morning, Maya counted four blue lanterns near the station and said th
         }
         let layout = try PDFSlideshowService.buildLayout(pdfURL: URL(fileURLWithPath: pdfPath))
         let previous = store.loadSlideshowSegments(clipID: clipID)
-        var skippedByNumber: [Int: Bool] = [:]
-        for record in previous {
-            skippedByNumber[record.number] = record.skipped
+
+        // old number -> new number, by page + largest crop overlap.
+        var renumbered: [Int: Int] = [:]
+        for old in previous {
+            var best: (number: Int, overlap: CGFloat)?
+            for segment in layout.segments where segment.page == old.page {
+                let intersection = segment.crop.intersection(old.crop)
+                let overlap = intersection.isNull ? 0 : intersection.width * intersection.height
+                if overlap > (best?.overlap ?? 0) {
+                    best = (segment.number, overlap)
+                }
+            }
+            if let best, best.overlap > 0 {
+                renumbered[old.number] = best.number
+            }
         }
+        var takenTargets = Set<Int>()
+        // Prefer the old segment with the LARGER overlap when two olds map to
+        // one new (a blank half disappeared): keep order stable by old number.
+        let sortedOlds = renumbered.keys.sorted()
+        var finalRenumbered: [Int: Int] = [:]
+        for oldNumber in sortedOlds {
+            let target = renumbered[oldNumber]!
+            if takenTargets.contains(target) { continue }
+            takenTargets.insert(target)
+            finalRenumbered[oldNumber] = target
+        }
+
+        // Carry skip flags by overlap too.
+        var skippedByNewNumber: [Int: Bool] = [:]
+        for old in previous {
+            if old.skipped, let target = finalRenumbered[old.number] {
+                skippedByNewNumber[target] = true
+            }
+        }
+
         let records = layout.segments.map {
             SlideshowSegmentRecord(
                 number: $0.number,
                 page: $0.page,
                 crop: $0.crop,
                 scrollsIn: $0.scrollsIn,
-                skipped: skippedByNumber[$0.number] ?? false
+                skipped: skippedByNewNumber[$0.number] ?? false
             )
         }
         store.replaceSlideshowSegments(clipID: clipID, segments: records)
+
+        // Re-link narration stubs to their new segment numbers; orphans lose
+        // their anchor but keep text and audio for the transcript.
+        var relinked = 0
+        var orphaned = 0
+        for index in paragraphs.indices {
+            guard let oldNumber = paragraphs[index].segmentNumber else { continue }
+            if let newNumber = finalRenumbered[oldNumber] {
+                paragraphs[index].segmentNumber = newNumber
+                relinked += 1
+            } else {
+                paragraphs[index].segmentNumber = nil
+                paragraphs[index].startTime = nil
+                orphaned += 1
+            }
+        }
+
         if let workspace = videoWorkspaceURL {
             try? PDFSlideshowService.dumpSegmentAssets(
                 segments: records,
@@ -1487,7 +1538,9 @@ On Tuesday morning, Maya counted four blue lanterns near the station and said th
             )
         }
         await refreshSlideshow(rebake: true)
-        statusMessage = "Slideshow re-split: \(records.count) segments at whitespace breaks, movie re-baked."
+        statusMessage = "Slideshow re-split: \(records.count) segments, \(relinked) narrations re-linked"
+            + (orphaned > 0 ? ", \(orphaned) orphaned (region no longer a segment)" : "")
+            + ", movie re-baked."
         return statusMessage
     }
 
