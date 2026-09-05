@@ -65,10 +65,25 @@ struct ClipRecord {
     var paragraphs: [Paragraph]
     /// Measured voice durations straight from voice_takes.
     var voiceDurations: [UUID: Double] = [:]
+    /// Digest of the text each stored take was generated from — a mismatch
+    /// with the current text means the take is stale.
+    var voiceTextDigests: [UUID: String] = [:]
     /// Slideshow clips carry their source PDF here; video_path points at the
     /// baked stills movie. Defaults keep pre-slideshow call sites unchanged.
     var isSlideshow: Bool = false
     var sourcePDFPath: String? = nil
+}
+
+extension ProjectStore {
+    /// Stable digest of narration text, shared by the store and the view
+    /// model so take-staleness checks agree everywhere.
+    static func textDigest(_ text: String) -> String {
+        var hash: UInt64 = 5381
+        for byte in text.utf8 {
+            hash = (hash &* 33) &+ UInt64(byte)
+        }
+        return String(hash, radix: 16)
+    }
 }
 
 /// One viewport over a PDF page: the crop rect (PDF user space) shown while
@@ -167,6 +182,7 @@ final class ProjectStore {
             byte_count   INTEGER NOT NULL,
             file_mtime   REAL NOT NULL DEFAULT 0,
             wav          BLOB NOT NULL,
+            text_md5     TEXT,
             created_at   REAL NOT NULL,
             updated_at   REAL NOT NULL
         );
@@ -571,12 +587,12 @@ final class ProjectStore {
         var statement: OpaquePointer?
         defer { sqlite3_finalize(statement) }
         let sql = """
-        INSERT INTO voice_takes(narration_id, format, sample_rate, duration, byte_count, file_mtime, wav, created_at, updated_at)
-        VALUES(?1, 'wav', ?2, ?3, ?4, ?5, ?6, ?7, ?7)
+        INSERT INTO voice_takes(narration_id, format, sample_rate, duration, byte_count, file_mtime, wav, text_md5, created_at, updated_at)
+        VALUES(?1, 'wav', ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8)
         ON CONFLICT(narration_id) DO UPDATE SET
             sample_rate = excluded.sample_rate, duration = excluded.duration,
             byte_count = excluded.byte_count, file_mtime = excluded.file_mtime,
-            wav = excluded.wav, updated_at = excluded.updated_at;
+            wav = excluded.wav, text_md5 = excluded.text_md5, updated_at = excluded.updated_at;
         """
         guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK,
               let stmt = statement
@@ -589,7 +605,10 @@ final class ProjectStore {
         data.withUnsafeBytes { raw in
             sqlite3_bind_blob(stmt, 6, raw.baseAddress, Int32(data.count), SQLITE_TRANSIENT)
         }
-        sqlite3_bind_double(stmt, 7, now)
+        // Written only when the take itself is written: the digest records
+        // the text this take was GENERATED from, not the text at last save.
+        sqlite3_bind_text(stmt, 7, ProjectStore.textDigest(paragraph.text), -1, SQLITE_TRANSIENT)
+        sqlite3_bind_double(stmt, 8, now)
         stepDone(stmt)
     }
 
@@ -619,11 +638,12 @@ final class ProjectStore {
 
         var paragraphs: [Paragraph] = []
         var durations: [UUID: Double] = [:]
+        var textDigests: [UUID: String] = [:]
         var statement: OpaquePointer?
         defer { sqlite3_finalize(statement) }
         let sql = """
         SELECT n.id, n.text, n.voice_id, n.gap_duration, n.start_time, n.is_recorded, n.speed, n.pitch,
-               n.output_filename, n.audio_path, n.segment_number, t.duration, t.wav
+               n.output_filename, n.audio_path, n.segment_number, t.duration, t.wav, t.text_md5
         FROM narrations n LEFT JOIN voice_takes t ON t.narration_id = n.id
         WHERE n.clip_id = ?1
         ORDER BY n.position;
@@ -668,6 +688,9 @@ final class ProjectStore {
             if let takeDuration, takeDuration > 0 {
                 durations[id] = takeDuration
             }
+            if let digest = columnText(stmt, 13), !digest.isEmpty {
+                textDigests[id] = digest
+            }
             paragraphs.append(Paragraph(
                 id: id,
                 text: text,
@@ -691,6 +714,7 @@ final class ProjectStore {
             originalAudioVolume: volume,
             paragraphs: paragraphs,
             voiceDurations: durations,
+            voiceTextDigests: textDigests,
             isSlideshow: isSlideshow,
             sourcePDFPath: sourcePDFPath
         )
@@ -720,22 +744,37 @@ final class ProjectStore {
 
     private func migrateIfNeeded() -> Bool {
         let version = metaGet("schemaVersion")
-        if version == "3" {
+        if version == "4" {
             // Schema creation must come after any v1 rename: CREATE TABLE IF
             // NOT EXISTS would silently keep the old table shapes and the new
             // indexes would then fail against missing columns.
             return createSchema()
         }
-        if version == "2" {
+        if version == "3" {
+            guard migrateV3ToV4() else { return false }
+        } else if version == "2" {
             guard migrateV2ToV3() else { return false }
+            guard migrateV3ToV4() else { return false }
         } else if version == "1" {
             guard migrateV1ToV2() else { return false }
             guard migrateV2ToV3() else { return false }
+            guard migrateV3ToV4() else { return false }
         } else {
             guard createSchema() else { return false }
             migrateLegacyJSON()
         }
-        metaSet("schemaVersion", "3")
+        metaSet("schemaVersion", "4")
+        return true
+    }
+
+    /// v4 records which text each voice take was generated from, so large
+    /// documents can regenerate only missing or stale takes.
+    private func migrateV3ToV4() -> Bool {
+        guard !columnExists("voice_takes", "text_md5") else {
+            return createSchema()
+        }
+        guard execute("ALTER TABLE voice_takes ADD COLUMN text_md5 TEXT;") else { return false }
+        debugLog("DEBUG:: [Store] v3 database migrated to v4 (take text digests)")
         return true
     }
 

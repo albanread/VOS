@@ -44,16 +44,19 @@ Apple Events client). Total flow for a 40-page manual is a few minutes.
 
    Divider pages, blank half-pages, and pure-decoration crops are skips.
 
-4. **Generate** — synthesize every stub with the reference voice and
-   re-bake with measured durations:
+4. **Generate** — synthesize with the reference voice and re-bake with
+   measured durations:
 
    ```applescript
    tell application "VoiceOverStudio" to initialize engines
-   tell application "VoiceOverStudio" to generate all
+   tell application "VoiceOverStudio" to generate missing
    ```
 
-   Generation re-times the segments automatically; the movie is re-baked
-   once at the end. `bake slideshow` re-bakes on demand at any point.
+   `generate missing` writes only takes that are absent or stale (generated
+   from different text) — on a 70-segment document it skips everything that
+   is already current. `generate all` replaces every take; use it only when
+   the voice itself changed. Generation re-times segments automatically and
+   the movie re-bakes once at the end; `bake slideshow` re-bakes on demand.
 
 5. **Verify and hand off**:
 

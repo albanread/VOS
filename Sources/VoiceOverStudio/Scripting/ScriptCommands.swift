@@ -163,6 +163,21 @@ final class VOSGenerateAllCommand: NSScriptCommand {
     }
 }
 
+@objc(VOSGenerateMissingCommand)
+final class VOSGenerateMissingCommand: NSScriptCommand {
+    override func performDefaultImplementation() -> Any? {
+        guard let model = vosModel() else { return vosFail(vosNoAppMessage) }
+        guard MainActor.assumeIsolated({ model.isTTSReady }) else {
+            return vosFail("The speech engine is not loaded. Run 'initialize engines' or 'auto setup' first.")
+        }
+
+        return vosRunAsync {
+            let written = await model.generateMissingAudio()
+            return "\(written) — \(model.statusMessage)"
+        }
+    }
+}
+
 @objc(VOSStopPlaybackCommand)
 final class VOSStopPlaybackCommand: NSScriptCommand {
     override func performDefaultImplementation() -> Any? {

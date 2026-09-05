@@ -149,6 +149,7 @@ check "skip segment"         'skip segment number 5'
 check "unskip segment"       'unskip segment number 5'
 check "resplit slideshow"   'resplit slideshow'
 check "dump slideshow"       "dump slideshow to \"$SDUMP\""
+check "generate missing"    'generate missing'
 check "bake slideshow"       'bake slideshow'
 if [[ -s "$SDUMP/manifest.json" && -s "$SDUMP/seg-001.png" ]]; then
   echo "  ok   dump assets exist ($(ls "$SDUMP" | wc -l | tr -d ' ') files)"

@@ -87,11 +87,33 @@ enum PDFSlideshowService {
         guard let document = PDFDocument(url: pdfURL), document.pageCount > 0 else {
             throw SlideshowError.unreadablePDF
         }
+
+        // Running headers and footers are text lines like any other, but they
+        // recur on most pages at the top/bottom edge. Left in, the content
+        // box spans the whole page and the splitter's widest free band is the
+        // body-to-footer whitespace — every other segment becomes a footer
+        // sliver. Detect once per document and exclude.
+        let furniture = recurringFurniture(in: document)
+
         var segments: [SegmentLayout] = []
         for pageIndex in 0..<document.pageCount {
             guard let page = document.page(at: pageIndex) else { continue }
             let mediaBox = page.bounds(for: .mediaBox)
-            let lines = lineRects(page, within: mediaBox)
+            let edgeBand = mediaBox.height * 0.12
+            let lines = lineEntries(page, within: mediaBox)
+                .filter { entry in
+                    // Furniture matches exactly, or as a fragment: PDFKit may
+                    // return "CocoaMojo — examples/othello" and "Page 1 of 35"
+                    // as two lines where other pages give one.
+                    guard entry.rect.midY > mediaBox.maxY - edgeBand
+                        || entry.rect.midY < mediaBox.minY + edgeBand
+                    else { return true }
+                    if furniture.contains(entry.fingerprint) { return false }
+                    return !furniture.contains { major in
+                        major.contains(entry.fingerprint) || entry.fingerprint.contains(major)
+                    }
+                }
+                .map(\.rect)
             let text = (page.string ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
 
             // Text pages: the union of line rects IS the content. Pixel scans
@@ -126,12 +148,48 @@ enum PDFSlideshowService {
         return Layout(pageCount: document.pageCount, segments: segments)
     }
 
-    /// Text line rects on the page, top of the page first.
-    private static func lineRects(_ page: PDFPage, within mediaBox: CGRect) -> [CGRect] {
+    private struct LineEntry {
+        let fingerprint: String
+        let rect: CGRect
+    }
+
+    /// Text lines with a recurrence fingerprint: text with digits folded to
+    /// '#' so "Page 3 of 35" and "Page 4 of 35" match, kept with bounds.
+    private static func lineEntries(_ page: PDFPage, within mediaBox: CGRect) -> [LineEntry] {
         (page.selection(for: mediaBox)?.selectionsByLine() ?? [])
-            .map { $0.bounds(for: page) }
-            .filter { !$0.isEmpty }
-            .sorted { $0.midY > $1.midY }
+            .compactMap { selection in
+                let bounds = selection.bounds(for: page)
+                guard !bounds.isEmpty, let text = selection.string else { return nil }
+                let fingerprint = String(
+                    text.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                        .map { $0.isNumber ? "#" : $0 }
+                )
+                return LineEntry(fingerprint: fingerprint, rect: bounds)
+            }
+            .sorted { $0.rect.midY > $1.rect.midY }
+    }
+
+    /// Fingerprints of lines recurring on at least half the pages while
+    /// sitting in the top or bottom 12% of the page — running furniture.
+    private static func recurringFurniture(in document: PDFDocument) -> Set<String> {
+        let pageCount = document.pageCount
+        guard pageCount >= 4 else { return [] }
+        var counts: [String: Int] = [:]
+        for pageIndex in 0..<pageCount {
+            guard let page = document.page(at: pageIndex) else { continue }
+            let mediaBox = page.bounds(for: .mediaBox)
+            let edgeBand = mediaBox.height * 0.12
+            var seen = Set<String>()
+            for entry in lineEntries(page, within: mediaBox)
+            where entry.rect.midY > mediaBox.maxY - edgeBand || entry.rect.midY < mediaBox.minY + edgeBand {
+                seen.insert(entry.fingerprint)
+            }
+            for fingerprint in seen {
+                counts[fingerprint, default: 0] += 1
+            }
+        }
+        let threshold = Int((Double(pageCount) / 2).rounded(.up))
+        return Set(counts.filter { $0.value >= threshold }.map(\.key))
     }
 
     /// Margin around the ink so ascenders, descenders and diagram edges sit
@@ -146,12 +204,13 @@ enum PDFSlideshowService {
             .intersection(mediaBox)
     }
 
-    /// Break portrait content at whitespace: find the inter-line gap closest
-    /// to the vertical middle (largest gap wins within a band around it) and
-    /// cut at its centre. The split edge gets NO padding — it is mid-gap by
-    /// construction; only the outer edges and the sides are padded. A half
-    /// that would hold nothing (no lines, no ink — decoration margins, empty
-    /// card regions) is never emitted: the page becomes one viewport instead.
+    /// Break portrait content at whitespace — provably without slicing a
+    /// line. All line rects are merged into ink extents; the whitespace bands
+    /// between them are the only legal split positions (PDFKit can return
+    /// overlapping line rects, so naive between-consecutive-lines gaps are
+    /// not safe). The band whose centre is nearest the content middle wins,
+    /// wider bands preferred. A page with no safe band, or a half that would
+    /// hold nothing (no lines, no ink), becomes a single viewport instead.
     private static func splitAtLineGaps(
         _ page: PDFPage,
         lines: [CGRect],
@@ -178,45 +237,43 @@ enum PDFSlideshowService {
             if lines.contains(where: { $0.midY >= rect.minY && $0.midY <= rect.maxY }) {
                 return true
             }
-            return ink.containsInk(in: rect)
+            // The ink fallback is for pages with no extractable lines at all
+            // (pure images). On text pages it must not rescue a line-less
+            // half — that is how footer and margin slivers sneak in.
+            return lines.isEmpty && ink.containsInk(in: rect)
         }
 
-        guard lines.count >= 2 else {
-            let parts = halves(splitAt: content.midY)
-            if hasContent(parts[0]), hasContent(parts[1]) { return parts }
-            return [padded(content, within: mediaBox)]
-        }
-
-        // Gaps between consecutive lines, top to bottom: the bottom edge of
-        // the upper line minus the top edge of the lower one.
-        var candidates: [(position: CGFloat, size: CGFloat)] = []
-        for index in 0..<(lines.count - 1) {
-            let gap = lines[index].minY - lines[index + 1].maxY
-            if gap >= 1 {
-                candidates.append((position: lines[index].minY - gap / 2, size: gap))
+        // Ink-free bands: sweep merged line extents bottom-up through content.
+        let extents = lines
+            .map { (min: $0.minY - 0.5, max: $0.maxY + 0.5) }
+            .sorted { $0.min < $1.min }
+        var bands: [(center: CGFloat, width: CGFloat)] = []
+        var inkEdge = content.minY
+        for extent in extents {
+            if extent.min > inkEdge + 2 {
+                bands.append((center: (inkEdge + extent.min) / 2, width: extent.min - inkEdge))
             }
+            inkEdge = max(inkEdge, extent.max)
         }
-        guard !candidates.isEmpty else {
-            let parts = halves(splitAt: content.midY)
-            if hasContent(parts[0]), hasContent(parts[1]) { return parts }
-            return [padded(content, within: mediaBox)]
+        if content.maxY > inkEdge + 2 {
+            bands.append((center: (inkEdge + content.maxY) / 2, width: content.maxY - inkEdge))
         }
 
         let middle = content.midY
-        let band = content.height * 0.20
-        let inBand = candidates.filter { abs($0.position - middle) <= band }
-        let chosen: CGFloat
-        if let best = (inBand.isEmpty ? candidates : inBand).max(by: { lhs, rhs in
-            let lhsScore = lhs.size - abs(lhs.position - middle) * 0.05
-            let rhsScore = rhs.size - abs(rhs.position - middle) * 0.05
+        // Prefer bands near the vertical middle — the widest band anywhere
+        // can be an ending's trailing whitespace, which would hand the whole
+        // body to one segment and a sliver to the other.
+        let nearMiddle = bands.filter { abs($0.center - middle) <= content.height * 0.30 }
+        let pool = nearMiddle.isEmpty ? bands : nearMiddle
+        if let best = pool.max(by: { lhs, rhs in
+            let lhsScore = lhs.width - abs(lhs.center - middle) * 0.05
+            let rhsScore = rhs.width - abs(rhs.center - middle) * 0.05
             return lhsScore < rhsScore
         }) {
-            chosen = best.position
-        } else {
-            chosen = middle
+            let parts = halves(splitAt: best.center)
+            if hasContent(parts[0]), hasContent(parts[1]) { return parts }
         }
-        let parts = halves(splitAt: chosen)
-        if hasContent(parts[0]), hasContent(parts[1]) { return parts }
+        // No safe band, or one half would be empty: one viewport for the page.
         return [padded(content, within: mediaBox)]
     }
 

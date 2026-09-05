@@ -385,6 +385,7 @@ On Tuesday morning, Maya counted four blue lanterns near the station and said th
         videoOriginalAudioVolume = min(max(record.originalAudioVolume, 0), 1)
         videoWorkspaceURL = record.workspacePath.map { URL(fileURLWithPath: $0) }
         paragraphAudioDurations = record.voiceDurations
+        paragraphAudioTextDigests = record.voiceTextDigests
         isSlideshowClip = record.isSlideshow
         slideshowPDFPath = record.isSlideshow ? record.sourcePDFPath : nil
         remapParagraphVoicesIfNeeded()
@@ -1514,8 +1515,10 @@ On Tuesday morning, Maya counted four blue lanterns near the station and said th
         }
         store.replaceSlideshowSegments(clipID: clipID, segments: records)
 
-        // Re-link narration stubs to their new segment numbers; orphans lose
-        // their anchor but keep text and audio for the transcript.
+        // Re-link narration stubs to their new segment numbers; orphans (their
+        // region is no longer a segment) leave the clip, and any segment left
+        // without a stub gets a fresh one so narrate/generate can always
+        // reach it.
         var relinked = 0
         var orphaned = 0
         for index in paragraphs.indices {
@@ -1528,6 +1531,18 @@ On Tuesday morning, Maya counted four blue lanterns near the station and said th
                 paragraphs[index].startTime = nil
                 orphaned += 1
             }
+        }
+        paragraphs.removeAll { $0.segmentNumber == nil }
+        let knownNumbers = Set(paragraphs.compactMap(\.segmentNumber))
+        for record in records where !knownNumbers.contains(record.number) {
+            var paragraph = Paragraph(
+                text: "",
+                voiceID: defaultVoiceIDForNewClips(),
+                gapDuration: defaultGap,
+                segmentNumber: record.number
+            )
+            paragraph.outputFilename = "clip_\(paragraph.id.uuidString).wav"
+            paragraphs.append(paragraph)
         }
 
         if let workspace = videoWorkspaceURL {
@@ -1760,6 +1775,20 @@ On Tuesday morning, Maya counted four blue lanterns near the station and said th
     /// when a project loads. The voice track draws clips from these; text
     /// without audio yet shows an estimate.
     @Published var paragraphAudioDurations: [UUID: Double] = [:]
+
+    /// Digest of the text each existing take was generated from. A mismatch
+    /// with the paragraph's current text means the take is stale and
+    /// "generate missing" will redo it.
+    @Published var paragraphAudioTextDigests: [UUID: String] = [:]
+
+    /// A paragraph needs (re)generation when it has no usable take, or when
+    /// the take on file was generated from different text.
+    func needsAudioRefresh(_ paragraph: Paragraph) -> Bool {
+        guard let path = paragraph.audioPath,
+              FileManager.default.fileExists(atPath: path)
+        else { return true }
+        return paragraphAudioTextDigests[paragraph.id] != ProjectStore.textDigest(paragraph.text)
+    }
 
     /// Rough speaking length for ungenerated text: ~2.6 words per second at
     /// normal speed, adjusted by the paragraph's speed preset.
@@ -2774,6 +2803,47 @@ On Tuesday morning, Maya counted four blue lanterns near the station and said th
         isProcessing = false
     }
 
+    /// The agent's bulk verb for large documents: synthesize only what is
+    /// missing or stale (take generated from different text). Re-bakes a
+    /// slideshow once at the end. Returns how many takes were written.
+    @discardableResult
+    func generateMissingAudio() async -> Int {
+        guard isTTSReady else {
+            statusMessage = "Initialize TTS before generating."
+            return 0
+        }
+        // Skipped segments keep their stubs for the transcript but never
+        // render — generating takes for them (an empty stub would loop
+        // forever) is wasted work.
+        var skippedSegments = Set<Int>()
+        if isSlideshowClip, let clipID = currentClipID, let store = projectStore {
+            skippedSegments = Set(
+                store.loadSlideshowSegments(clipID: clipID).filter(\.skipped).map(\.number)
+            )
+        }
+        let pending = paragraphs.filter { paragraph in
+            if let number = paragraph.segmentNumber, skippedSegments.contains(number) {
+                return false
+            }
+            return needsAudioRefresh(paragraph)
+        }
+        guard !pending.isEmpty else {
+            statusMessage = "Nothing to generate — every paragraph has a current take."
+            return 0
+        }
+        isProcessing = true
+        for (i, paragraph) in pending.enumerated() {
+            statusMessage = "Generating missing \(i + 1) of \(pending.count)…"
+            await generateAudio(for: paragraph.id)
+        }
+        if isSlideshowClip {
+            await refreshSlideshow(rebake: true)
+        }
+        statusMessage = "Generated \(pending.count) missing or stale paragraph\(pending.count == 1 ? "" : "s")."
+        isProcessing = false
+        return pending.count
+    }
+
     func saveFullRecording() {
         Task {
             statusMessage = "Generating all audio before export..."
@@ -2884,6 +2954,7 @@ On Tuesday morning, Maya counted four blue lanterns near the station and said th
         
         if success {
             paragraphs[index].audioPath = outputPath
+            paragraphAudioTextDigests[id] = ProjectStore.textDigest(text)
             await measureAudioDuration(for: id)
             if isSlideshowClip {
                 // Spans are voice-driven: recompute anchors now, re-bake in a

@@ -281,9 +281,14 @@
             <result type="integer" description="Position of the jingle that was added."/>
         </command>
 
-        <command name="generate all" code="VOSSgnal" description="Synthesize audio for every paragraph. Waits until all are finished.">
+        <command name="generate all" code="VOSSgnal" description="Synthesize audio for every paragraph, replacing existing takes. Waits until all are finished.">
             <cocoa class="VOSGenerateAllCommand"/>
             <result type="text" description="The status message after generation."/>
+        </command>
+
+        <command name="generate missing" code="VOSSgnms" description="Synthesize only paragraphs whose audio is missing or was generated from different text — the bulk verb for large documents; existing current takes are left alone. Waits until finished.">
+            <cocoa class="VOSGenerateMissingCommand"/>
+            <result type="text" description="How many takes were written, then the status message."/>
         </command>
 
         <command name="stop playback" code="VOSSstop" description="Stop any audio currently playing.">
