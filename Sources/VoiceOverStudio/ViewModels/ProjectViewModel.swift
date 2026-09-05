@@ -1092,6 +1092,17 @@ On Tuesday morning, Maya counted four blue lanterns near the station and said th
         Task { await prepareVideoPreview() }
     }
 
+    /// Toolbar jump: open the timeline of the active video clip, or the
+    /// project's first video clip when the transcript is active.
+    func openTimelineFromToolbar() {
+        if hasVideoClip {
+            openVideoTimeline()
+        } else if let videoClip = clipSummaries.first(where: { !$0.isTranscript }) {
+            switchToClip(videoClip.id)
+            openVideoTimeline()
+        }
+    }
+
     /// Open the timeline and (for video clips) land the playhead on a
     /// specific paragraph's start.
     func openTimeline(at seconds: Double?) {

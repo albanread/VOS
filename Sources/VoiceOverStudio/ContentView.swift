@@ -141,6 +141,14 @@ struct ContentView: View {
                     .disabled(!viewModel.isTTSReady || viewModel.isProcessing)
                     .help("Synthesize audio for every paragraph")
 
+                    if viewModel.clipSummaries.contains(where: { !$0.isTranscript }) {
+                        Button(action: viewModel.openTimelineFromToolbar) {
+                            Label("Timeline", systemImage: "film")
+                        }
+                        .keyboardShortcut("t", modifiers: [.command])
+                        .help("Open the video timeline (Cmd-T)")
+                    }
+
                     Button(action: {
                         Task { await viewModel.exportFullSequence() }
                     }) {
