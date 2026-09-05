@@ -125,8 +125,11 @@ class TTSService: ObservableObject {
         speakerOptions = Self.defaultVoiceOptions
 
         // MLX keeps freed tensors in a reuse cache; unbounded it idles at
-        // ~1 GB after a generation. 256 MB is plenty for one narration.
-        Memory.cacheLimit = 256 * 1024 * 1024
+        // ~1 GB after a generation. The limit must still fit the HOT working
+        // set of a generation — 256 MB made the allocator evict and re-map
+        // buffers mid-synthesis and slowed takes ~5x. 3 GB bounds the pool
+        // without thrashing it.
+        Memory.cacheLimit = 3 * 1024 * 1024 * 1024
 
         let loadedModel = try await TTS.loadModel(modelRepo: modelRepo, modelType: "qwen3_tts", cache: hubCache)
         model = loadedModel
